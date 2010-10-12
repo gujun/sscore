@@ -1,0 +1,28 @@
+add PI handling in Call Proceeding.
+add PI handling in alerting.
+fix slow start handling
+move faststart to callproceeding due to some broken hardware not anderstand 
+    correclty faststart in progress.
+fix rtp timer initialisation.
+implement alerting-indication option and channel variable.
+implement progress-indication option and channel variable.
+fix short DTMF warnings.
+remove SWITCH_RTP_FLAG_AUTOADJ because its not work correctly and not do anything reliable in our cases.
+fix faststart in progress handling
+fixxxxes
+remove trys to implement non standard codecs.
+implement jitter-size value option.
+implement gk register retry timer.
+implement h245insetup enable/disable option.
+implement h245tunneling enable/disable option.
+implement faststart enable/disable option.
+fix release handling from h323 leg.
+fix misstype in codec conversion.
+fix rtp issue causes choppy sound.
+fix progress ind handling on outbound calls.
+fix crash on log line, btw not understand why.
+implement dtmf transfer.
+fix codec name conversion a bit.
+fix crash on inbound fast start connection.
+
+initial release.
