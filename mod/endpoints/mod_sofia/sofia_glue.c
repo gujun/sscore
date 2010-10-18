@@ -36,6 +36,8 @@
 #include "mod_sofia.h"
 #include <switch_stun.h>
 
+/*added by gj 201007 for channel hold funtion*/
+#define TOGGLE_HOLD_CHANGE 1
 
 void sofia_glue_set_image_sdp(private_object_t *tech_pvt, switch_t38_options_t *t38_options)
 {
@@ -3164,7 +3166,10 @@ void sofia_glue_toggle_hold(private_object_t *tech_pvt, int sendonly)
 {
 	if (sendonly && switch_channel_test_flag(tech_pvt->channel, CF_ANSWERED)) {
 		if (!sofia_test_flag(tech_pvt, TFLAG_SIP_HOLD)) {
+#if TOGGLE_HOLD_CHANGE
+#else
 			const char *stream;
+#endif
 			const char *msg = "hold";
 
 			if (sofia_test_pflag(tech_pvt->profile, PFLAG_MANAGE_SHARED_APPEARANCE)) {
@@ -3183,7 +3188,11 @@ void sofia_glue_toggle_hold(private_object_t *tech_pvt, int sendonly)
 			if (tech_pvt->max_missed_hold_packets) {
 				switch_rtp_set_max_missed_packets(tech_pvt->rtp_session, tech_pvt->max_missed_hold_packets);
 			}
+#if TOGGLE_HOLD_CHANGE
+			switch_channel_set_flag(tech_pvt->channel, CF_SUSPEND);
+			switch_channel_set_flag(tech_pvt->channel, CF_HOLD);
 
+#else
 			if (!(stream = switch_channel_get_variable(tech_pvt->channel, SWITCH_HOLD_MUSIC_VARIABLE))) {
 				stream = tech_pvt->profile->hold_music;
 			}
@@ -3199,6 +3208,7 @@ void sofia_glue_toggle_hold(private_object_t *tech_pvt, int sendonly)
 					switch_yield(250000);
 				}
 			}
+#endif
 		}
 	} else {
 		if (sofia_test_flag(tech_pvt, TFLAG_HOLD_LOCK)) {
@@ -3209,16 +3219,25 @@ void sofia_glue_toggle_hold(private_object_t *tech_pvt, int sendonly)
 		sofia_clear_flag_locked(tech_pvt, TFLAG_HOLD_LOCK);
 
 		if (sofia_test_flag(tech_pvt, TFLAG_SIP_HOLD)) {
+#if TOGGLE_HOLD_CHANGE
+#else
 			const char *uuid;
 			switch_core_session_t *b_session;
-
+#endif
 			switch_yield(250000);
 
 			if (tech_pvt->max_missed_packets) {
 				switch_rtp_reset_media_timer(tech_pvt->rtp_session);
 				switch_rtp_set_max_missed_packets(tech_pvt->rtp_session, tech_pvt->max_missed_packets);
 			}
-
+#if TOGGLE_HOLD_CHANGE
+			if (switch_channel_test_flag(tech_pvt->channel, CF_HOLD)) {
+				
+				switch_channel_clear_flag(tech_pvt->channel, CF_SUSPEND);
+				switch_channel_clear_flag(tech_pvt->channel, CF_HOLD);
+			}
+			
+#else
 			if ((uuid = switch_channel_get_variable(tech_pvt->channel, SWITCH_SIGNAL_BOND_VARIABLE)) && (b_session = switch_core_session_locate(uuid))) {
 				switch_channel_t *b_channel = switch_core_session_get_channel(b_session);
 
@@ -3232,7 +3251,7 @@ void sofia_glue_toggle_hold(private_object_t *tech_pvt, int sendonly)
 				}
 				switch_core_session_rwunlock(b_session);
 			}
-
+#endif
 			sofia_clear_flag_locked(tech_pvt, TFLAG_SIP_HOLD);
 			switch_channel_clear_flag(tech_pvt->channel, CF_LEG_HOLDING);
 			switch_channel_presence(tech_pvt->channel, "unknown", "unhold", NULL);

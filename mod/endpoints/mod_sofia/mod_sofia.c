@@ -37,6 +37,12 @@
 /*************************************************************************************************************************************************************/
 #include "mod_sofia.h"
 #include "sofia-sip/sip_extra.h"
+
+#define GUJUN_CHANGE_SMS 1 //added by gujun 20100719
+#if GUJUN_CHANGE_SMS
+#define SMS_EVENT "event::custom::sms"
+#endif
+
 SWITCH_MODULE_LOAD_FUNCTION(mod_sofia_load);
 SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_sofia_shutdown);
 SWITCH_MODULE_DEFINITION(mod_sofia, mod_sofia_load, mod_sofia_shutdown, NULL);
@@ -4047,6 +4053,13 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_sofia_load)
 		return SWITCH_STATUS_GENERR;
 	}
 
+#if GUJUN_CHANGE_SMS
+	if(switch_event_reserve_subclass(SMS_EVENT)!= SWITCH_STATUS_SUCCESS){
+		switch_log_printf(SWITCH_CHANNEL_LOG,SWITCH_LOG_ERROR,"Couldn't register subclass %s!\n",SMS_EVENT);
+		return SWITCH_STATUS_GENERR;
+	}
+#endif
+
 	/* connect my internal structure to the blank pointer passed to me */
 	*module_interface = switch_loadable_module_create_module_interface(pool, modname);
 	sofia_endpoint_interface = switch_loadable_module_create_interface(*module_interface, SWITCH_ENDPOINT_INTERFACE);
@@ -4121,6 +4134,10 @@ SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_sofia_shutdown)
 	switch_event_unbind(&mod_sofia_globals.custom_node);
 	switch_event_unbind(&mod_sofia_globals.mwi_node);
 	switch_event_unbind_callback(general_event_handler);
+
+#if GUJUN_CHANGE_SMS
+	switch_event_free_subclass(SMS_EVENT);
+#endif
 
 	while (mod_sofia_globals.threads) {
 		switch_cond_next();

@@ -2427,7 +2427,7 @@ SWITCH_DECLARE(switch_status_t) switch_ivr_originate(switch_core_session_t *sess
 
 				if ((reason = switch_core_session_outgoing_channel(oglobals.session, var_event, chan_type,
 																   new_profile, &new_session, &pool, myflags, cancel_cause)) != SWITCH_CAUSE_SUCCESS) {
-					switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "Cannot create outgoing channel of type [%s] cause: [%s]\n",
+					switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "Cannot create outgoing channel of type [%s] cause: [%s]\n",
 									  chan_type, switch_channel_cause2str(reason));
 
 					if (pool) {

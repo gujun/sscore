@@ -107,6 +107,11 @@ extern int madvise(caddr_t, size_t, int);
 #define SWITCH_XML_WS   "\t\r\n "	/* whitespace */
 #define SWITCH_XML_ERRL 128		/* maximum error string length */
 
+/*added by gj 20101014*/
+#define ISSPACE(x)  (isspace((int)  ((unsigned char)x)))
+#define ISALPHA(x)  (isalpha((int)  ((unsigned char)x)))
+/*end add*/
+
 static int preprocess(const char *cwd, const char *file, int write_fd, int rlevel);
 
 typedef struct switch_xml_root *switch_xml_root_t;
@@ -495,7 +500,7 @@ static char *switch_xml_decode(char *s, char **ent, char t)
 	}
 
 	for (s = r;;) {
-		while (*s && *s != '&' && (*s != '%' || t != '%') && !isspace((unsigned char) (*s)))
+		while (*s && *s != '&' && (*s != '%' || t != '%') && !ISSPACE((*s)))
 			s++;
 
 		if (!*s)
@@ -556,7 +561,7 @@ static char *switch_xml_decode(char *s, char **ent, char t)
 				strncpy(s, ent[b], c);	/* copy in replacement text */
 			} else
 				s++;			/* not a known entity */
-		} else if ((t == ' ' || t == '*') && isspace((int) (*s)))
+		} else if ((t == ' ' || t == '*') && ISSPACE((*s)))
 			*(s++) = ' ';
 		else
 			s++;				/* no decoding needed */
@@ -967,12 +972,12 @@ SWITCH_DECLARE(switch_xml_t) switch_xml_parse_str(char *s, switch_size_t len)
 		attr = (char **) SWITCH_XML_NIL;
 		d = ++s;
 
-		if (isalpha((int) (*s)) || *s == '_' || *s == ':' || (int8_t) * s < '\0') {	/* new tag */
+		if (ISALPHA((*s)) || *s == '_' || *s == ':' || (int8_t) * s < '\0') {	/* new tag */
 			if (!root->cur)
 				return switch_xml_err(root, d, "markup outside of root element");
 
 			s += strcspn(s, SWITCH_XML_WS "/>");
-			while (isspace((int) (*s)))
+			while (ISSPACE((*s)))
 				*(s++) = '\0';	/* null terminate tag name */
 
 			if (*s && *s != '/' && *s != '>')	/* find tag in default attr list */
@@ -989,7 +994,7 @@ SWITCH_DECLARE(switch_xml_t) switch_xml_parse_str(char *s, switch_size_t len)
 				attr[l] = s;	/* set attribute name */
 
 				s += strcspn(s, SWITCH_XML_WS "=/>");
-				if (*s == '=' || isspace((int) (*s))) {
+				if (*s == '=' || ISSPACE((*s))) {
 					*(s++) = '\0';	/* null terminate tag attribute name */
 					q = *(s += strspn(s, SWITCH_XML_WS "="));
 					if (q == '"' || q == '\'') {	/* attribute value */
@@ -1009,7 +1014,7 @@ SWITCH_DECLARE(switch_xml_t) switch_xml_parse_str(char *s, switch_size_t len)
 							attr[l + 3][l / 2] = SWITCH_XML_TXTM;	/* value malloced */
 					}
 				}
-				while (isspace((int) (*s)))
+				while (ISSPACE( (*s)))
 					s++;
 			}
 
@@ -1038,7 +1043,7 @@ SWITCH_DECLARE(switch_xml_t) switch_xml_parse_str(char *s, switch_size_t len)
 			*s = '\0';			/* temporarily null terminate tag name */
 			if (switch_xml_close_tag(root, d, s))
 				return &root->xml;
-			if (isspace((int) (*s = q)))
+			if (ISSPACE((*s = q)))
 				s += strspn(s, SWITCH_XML_WS);
 		} else if (!strncmp(s, "!--", 3)) {	/* xml comment */
 			if (!(s = strstr(s + 3, "--")) || (*(s += 2) != '>' && *s) || (!*s && e != '>'))

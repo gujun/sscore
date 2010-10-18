@@ -35,6 +35,11 @@
 #include "mod_sofia.h"
 #include "switch_stun.h"
 
+#define GUJUN_CHANGE_SMS 1 //added by gujun 20100719
+#if GUJUN_CHANGE_SMS
+#define SMS_EVENT "event::custom::sms"
+#endif
+
 #define SUB_OVERLAP 300
 struct state_helper {
 	switch_hash_t *hash;
@@ -63,6 +68,56 @@ struct presence_helper {
 	switch_stream_handle_t stream;
 	char last_uuid[512];
 };
+#if GUJUN_CHANGE_SMS
+switch_status_t fire_sms_event(const char *proto,const char *from,const char *to,
+							   const char *subject,const char *body,const char *type,const char *hint, int is_ok){
+	switch_event_t *event;
+	switch_time_t start_time;
+    switch_time_exp_t start_time_exp;
+    char start_epoch_str[80]="";
+    char start_time_str[80] = "";
+    switch_size_t retsize;
+
+	if(proto == NULL || to == NULL || from == NULL || body == NULL){
+		return SWITCH_STATUS_FALSE;
+	}
+	if(switch_event_create_subclass(&event,SWITCH_EVENT_CUSTOM,SMS_EVENT) == SWITCH_STATUS_SUCCESS){
+		if(is_ok){
+			switch_event_add_header_string(event,SWITCH_STACK_BOTTOM,"is_ok","1");
+		}
+		else{
+			switch_event_add_header_string(event,SWITCH_STACK_BOTTOM,"is_ok","0");
+		}
+		switch_event_add_header_string(event,SWITCH_STACK_BOTTOM,"chat","sip");
+		switch_event_add_header_string(event,SWITCH_STACK_BOTTOM,"to",to);
+		switch_event_add_header_string(event,SWITCH_STACK_BOTTOM,"proto",proto);
+		switch_event_add_header_string(event,SWITCH_STACK_BOTTOM,"from",from);
+		if(subject){
+			switch_event_add_header_string(event,SWITCH_STACK_BOTTOM,"subject",subject);
+		}
+		if(type){
+			switch_event_add_header_string(event,SWITCH_STACK_BOTTOM,"type",type);
+		}
+		if(hint){
+			switch_event_add_header_string(event,SWITCH_STACK_BOTTOM,"hint",hint);
+		}
+		//switch_event_add_body(event,body);
+		switch_event_add_header_string(event,SWITCH_STACK_BOTTOM,"body",body);
+
+		start_time = switch_micro_time_now();
+		switch_time_exp_lt(&start_time_exp,start_time);
+		switch_strftime_nocheck(start_time_str,&retsize,sizeof(start_time_str),"%Y-%m-%d %H:%M:%S",&start_time_exp);
+		start_time = (switch_time_t)(start_time/1000000);
+		switch_snprintf(start_epoch_str,sizeof(start_epoch_str),"%ld",start_time);
+		
+		switch_event_add_header_string(event,SWITCH_STACK_BOTTOM,"start_epoch",start_epoch_str);
+		switch_event_add_header_string(event,SWITCH_STACK_BOTTOM,"start_stamp",start_time_str);
+		switch_event_fire(&event);
+	}
+
+	return SWITCH_STATUS_SUCCESS;
+}
+#endif
 
 switch_status_t sofia_presence_chat_send(const char *proto, const char *from, const char *to, const char *subject,
 										 const char *body, const char *type, const char *hint)
@@ -75,8 +130,12 @@ switch_status_t sofia_presence_chat_send(const char *proto, const char *from, co
 	char *contact = NULL;
 	char *dup = NULL;
 	switch_status_t status = SWITCH_STATUS_FALSE;
-	const char *ct = "text/html";
+	const char *ct = "text/plain";//"text/html";
 	sofia_destination_t *dst = NULL;
+
+#if GUJUN_CHANGE_SMS
+	int redo = 0;
+#endif
 
 	if (!to) {
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Missing To: header.\n");
@@ -120,6 +179,10 @@ switch_status_t sofia_presence_chat_send(const char *proto, const char *from, co
 	}
 	if (!sofia_reg_find_reg_url(profile, user, host, buf, sizeof(buf))) {
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Cannot find user. [%s][%s]\n", user, host);
+
+#if GUJUN_CHANGE_SMS
+		redo++;
+#endif
 		goto end;
 	}
 
@@ -132,6 +195,10 @@ switch_status_t sofia_presence_chat_send(const char *proto, const char *from, co
 
 		if (!fp) {
 			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_CRIT, "Memory Error!\n");
+
+#if GUJUN_CHANGE_SMS
+			redo++;
+#endif
 			goto end;
 		}
 
@@ -154,11 +221,17 @@ switch_status_t sofia_presence_chat_send(const char *proto, const char *from, co
 
 	if (!(dst = sofia_glue_get_destination(buf))) {
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_CRIT, "Memory Error!\n");
+
+#if GUJUN_CHANGE_SMS
+		redo++;
+#endif
 		goto end;
 	}
 
 	/* sofia_glue is running sofia_overcome_sip_uri_weakness we do not, not sure if it matters */
-
+#if GUJUN_CHANGE_SMS
+	redo++;
+#endif
 	status = SWITCH_STATUS_SUCCESS;
 	/* if this cries, add contact here too, change the 1 to 0 and omit the safe_free */
 	msg_nh = nua_handle(profile->nua, NULL, TAG_IF(dst->route_uri, NUTAG_PROXY(dst->route_uri)), TAG_IF(dst->route, SIPTAG_ROUTE_STR(dst->route)),
@@ -168,6 +241,12 @@ switch_status_t sofia_presence_chat_send(const char *proto, const char *from, co
 
 
   end:
+#if GUJUN_CHANGE_SMS
+	if(redo){
+		//switch_log_printf(SWITCH_CHANNEL_LOG,SWITCH_LOG_ERROR,"fire sms form %s to %s\n",from,to);
+		fire_sms_event(proto,from,to,subject,body,type,hint,(status==SWITCH_STATUS_SUCCESS)?1:0);
+	}
+#endif
 	sofia_glue_free_destination(dst);
 	switch_safe_free(contact);
 	switch_safe_free(ffrom);
