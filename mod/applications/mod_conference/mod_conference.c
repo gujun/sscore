@@ -43,7 +43,6 @@
 #define GUJUN_CHANGE_HOLD 1 //added by gujun 20100630
 #define GUJUN_CHANGE_PLAYBACK 1
 
-
 SWITCH_MODULE_LOAD_FUNCTION(mod_conference_load);
 SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_conference_shutdown);
 SWITCH_MODULE_DEFINITION(mod_conference, mod_conference_load, mod_conference_shutdown, NULL);
@@ -4905,9 +4904,9 @@ static switch_status_t conference_outcall(conference_obj_t *conference,
 	if (switch_ivr_originate(session, &peer_session, cause, bridgeto, timeout, NULL, cid_name, cid_num, NULL, NULL, SOF_NONE, NULL) !=
 		SWITCH_STATUS_SUCCESS) {
 #if GUJUN_CHANGE_PLAYBACK
-    	switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_NOTICE, "Cannot create outgoing channel, cause: %s\n",
+    	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "Cannot create outgoing channel, cause: %s\n",
 						  switch_channel_cause2str(*cause));
-
+        if(caller_channel != NULL){
 		continue_on_fail = switch_channel_get_variable(caller_channel, "continue_on_fail");
 		failure_causes = switch_channel_get_variable(caller_channel,"failure_causes");
 		if (continue_on_fail || failure_causes) {
@@ -4928,6 +4927,7 @@ static switch_status_t conference_outcall(conference_obj_t *conference,
 				status = SWITCH_STATUS_FALSE;
 				continue_caller++;
 			}
+		}
 		}
 		if(continue_caller <= 0){
 

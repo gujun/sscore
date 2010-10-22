@@ -1404,11 +1404,11 @@ static void conference_event_handler(switch_event_t *event)
 	gateway_name = switch_event_get_header(event,GATEWAY_NAME);
 
 	if(channel_name == NULL){
-		switch_log_printf(SWITCH_CHANNEL_LOG,SWITCH_LOG_ERROR,"%s is NULL\n",NODE_NAME_VARIABLE);
+		switch_log_printf(SWITCH_CHANNEL_LOG,SWITCH_LOG_DEBUG,"%s is NULL\n",NODE_NAME_VARIABLE);
 		return;
 	}
 	if(uuid == NULL){
-		switch_log_printf(SWITCH_CHANNEL_LOG,SWITCH_LOG_ERROR,"%s is null\n",UUID_EVENT_HEADER);
+		switch_log_printf(SWITCH_CHANNEL_LOG,SWITCH_LOG_DEBUG,"%s is null\n",UUID_EVENT_HEADER);
 		return;
 	}
 	//switch_log_printf(SWITCH_CHANNEL_LOG,SWITCH_LOG_DEBUG,"%s has event to mod_dispat\n",node_name);
