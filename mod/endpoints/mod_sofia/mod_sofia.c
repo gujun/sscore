@@ -39,6 +39,8 @@
 #include "sofia-sip/sip_extra.h"
 
 #define GUJUN_CHANGE_SMS 1 //added by gujun 20100719
+#define GUJUN_CHANGE_D_TRANSFER 1 //added by gujun 20101022
+
 #if GUJUN_CHANGE_SMS
 #define SMS_EVENT "event::custom::sms"
 #endif
@@ -3119,6 +3121,182 @@ static switch_status_t sofia_manage(char *relative_oid, switch_management_action
 	return SWITCH_STATUS_SUCCESS;
 }
 
+#if GUJUN_CHANGE_D_TRANSFER
+static int check_period(const char *now,const char *start,const char *end){
+    int ret = 0;
+	char *now_dup= NULL,*start_dup=NULL,*end_dup = NULL;
+    char *h = NULL,*m = NULL;
+    int now_h = 0,now_m = 0,now_t = 0;
+    int start_h = 0,start_m = 0,start_t = 0;
+    int end_h =0 ,end_m = 0,end_t = 0;
+
+    if(switch_strlen_zero(now) || switch_strlen_zero(start) || switch_strlen_zero(end)){
+        return 0;
+    }
+	 switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, "check %s  between %s~%s ",now,start,end);
+	 
+#define getHM(S,D,H,M,T) \
+	 D = strdup(S); \
+	if(D == NULL){ \
+		goto done; \
+    } \
+    h = D; \
+    m = strchr(h,':'); \
+    if(m == NULL){ \
+		goto done; \
+    } \
+    *m++='\0'; \
+    H = atoi(h); \
+    H = H%24; \
+    M = atoi(m); \
+    M = M%60; \
+	T = H*60+M;
+
+	 getHM(now,now_dup,now_h,now_m,now_t);
+	 getHM(start,start_dup,start_h,start_m,start_t);
+	 getHM(end,end_dup,end_h,end_m,end_t);
+
+	 if(end_t >= start_t){
+		 if(start_t <= now_t && now_t <= end_t){
+			 ret  = 1;
+		 }
+	 }
+	 else{
+		 if(now_t >= start_t || now_t <= end_t){
+			 ret = 1;
+		 }
+	 }
+ done:
+	 if(now_dup){
+		 free(now_dup);
+	 }
+	 if(start_dup){
+		 free(start_dup);
+	 }
+	 if(end_dup){
+		 free(end_dup);
+	 }
+	 switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, ", ret is %d\n",ret);
+	 return ret;
+}
+static int check_direct_transfer_period(const char *period){
+
+	int argc;
+    char *argv[25] = { 0 };
+    char *lbuf = NULL;
+
+    switch_time_t start_time;
+    switch_time_exp_t start_time_exp;
+    char time_str[80]="";
+    switch_size_t retsize;
+
+    char *start,*end;
+    int ret = 0;
+
+    if(switch_strlen_zero(period)){
+        return 1;
+    }
+    if(!(lbuf = strdup(period))){
+        return 0;
+    }
+    argc = switch_separate_string(lbuf,',',argv,(sizeof(argv)/sizeof(argv[0])));
+    if(argc < 1){
+        goto done;
+    }
+	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, "separte %s into %d period\n",lbuf,argc);
+    start_time = switch_micro_time_now();
+    switch_time_exp_lt(&start_time_exp,start_time);
+    switch_strftime_nocheck(time_str,&retsize,sizeof(time_str),"%H:%M",&start_time_exp);//"%Y-%m-%d %H:%M:%S",&start_time_exp);
+
+    for(int i = 0 ; i < argc ; i++){
+        start = argv[i];
+        if(start == NULL){
+            continue;
+        }
+        end = strchr(start,'-');
+        if(end == NULL){
+            continue;
+        }
+        *end++ = '\0';
+
+        if((ret = check_period(time_str,start,end))){
+            break;
+        }
+    }
+
+ done:
+    if(lbuf){
+        free(lbuf);
+    }
+    return ret;
+}
+static char *  user_transfer(const char *id,const char *profile_name,switch_memory_pool_t *pool)
+{
+	switch_xml_t domain=NULL, xml = NULL, user=NULL,group = NULL,variables=NULL,variable=NULL;
+	char * dest_new= NULL;
+	char *d_transfer = NULL,*d_transfer_period = NULL;
+	int transfer_ok= 0;
+	
+	if(id == NULL || profile_name == NULL ){
+		return NULL;
+	}
+
+	if (switch_xml_locate_user("id", id, profile_name, NULL, &xml, &domain, &user, &group, NULL) != SWITCH_STATUS_SUCCESS) {
+		
+		goto done;
+	}
+
+	if(user != NULL){
+		variables = switch_xml_child(user,"variables");
+		if(variables != NULL){
+			variable = switch_xml_child(variables,"variable");
+			while(variable != NULL){
+				const char * var = switch_xml_attr_soft(variable,"name");
+				const char * val = switch_xml_attr_soft(variable,"value");
+				if(!strcasecmp("direct_transfer", var)){
+					d_transfer = strdup(val);
+				}else if(!strcasecmp("direct_transfer_period", var)){
+					d_transfer_period = strdup(val);
+				}
+				variable = switch_xml_next(variable);
+			}
+			
+		}
+	}
+
+	if(d_transfer){
+		if(d_transfer_period){
+			if(check_direct_transfer_period(d_transfer_period)){
+				transfer_ok++;
+			}
+		}else{
+			transfer_ok++;
+		}
+
+		if(transfer_ok){
+			if(pool){
+				dest_new = switch_core_strdup(pool,d_transfer);
+			}
+			else{
+				dest_new = strdup(d_transfer);
+			}
+		}
+	}
+ done:
+	if(xml){
+		switch_xml_free(xml);
+	}
+	if(d_transfer){
+		free(d_transfer);
+	}
+	if(d_transfer_period){
+		free(d_transfer_period);
+	}
+	return dest_new;
+}
+
+#endif
+
 static switch_call_cause_t sofia_outgoing_channel(switch_core_session_t *session, switch_event_t *var_event,
 												  switch_caller_profile_t *outbound_profile, switch_core_session_t **new_session,
 												  switch_memory_pool_t **pool, switch_originate_flag_t flags, switch_call_cause_t *cancel_cause)
@@ -3133,6 +3311,13 @@ static switch_call_cause_t sofia_outgoing_channel(switch_core_session_t *session
 	char *host = NULL, *dest_to = NULL;
 	const char *hval = NULL;
 	char *not_const = NULL;
+
+#if GUJUN_CHANGE_D_TRANSFER
+	char *user = NULL,*dest_new = NULL;
+	switch_hash_t  *check_loop_hash = NULL;
+	static int flag= 1;
+	char buf[1024];
+#endif
 
 	*new_session = NULL;
 
@@ -3154,6 +3339,9 @@ static switch_call_cause_t sofia_outgoing_channel(switch_core_session_t *session
 	switch_mutex_init(&tech_pvt->sofia_mutex, SWITCH_MUTEX_NESTED, switch_core_session_get_pool(nsession));
 
 	data = switch_core_session_strdup(nsession, outbound_profile->destination_number);
+#if GUJUN_CHANGE_D_TRANSFER
+ direct_transfer:
+#endif
 	if ((dest_to = strchr(data, '^'))) {
 		*dest_to++ = '\0';
 	}
@@ -3299,9 +3487,75 @@ static switch_call_cause_t sofia_outgoing_channel(switch_core_session_t *session
 		}
 
 		if (!strncasecmp(dest, "sip:", 4) || !strncasecmp(dest, "sips:", 5)) {
+#if GUJUN_CHANGE_D_TRANSFER
+			user = strchr(dest,':');
+			user++;
+			
+			if (!(host = strchr(user, '@'))) {
+				switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "Invalid URL\n");
+				cause = SWITCH_CAUSE_INVALID_NUMBER_FORMAT;
+				goto error;
+			}
+			
+			*host = '\0';
+			dest_new = user_transfer(user,profile_name,switch_core_session_get_pool(nsession));
+			
+			
+			if(dest_new){
+				if(check_loop_hash == NULL){
+					switch_core_hash_init(&check_loop_hash, switch_core_session_get_pool(nsession));
+
+				}
+				if(switch_core_hash_find(check_loop_hash,user)){
+			
+						switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_WARNING, "transfer loops for user %s@%s\n", dest, host);
+					cause = SWITCH_CAUSE_USER_NOT_REGISTERED;
+					goto error;
+				}
+				else{
+					switch_core_hash_insert(check_loop_hash,switch_core_strdup(switch_core_session_get_pool(nsession),user),&flag);
+					data =dest_new;
+					goto direct_transfer;
+				}
+				
+			}
+			
+			*host = '@';
+
+			
+#endif
 			tech_pvt->dest = switch_core_session_strdup(nsession, dest);
 		} else if ((host = strchr(dest, '%'))) {
+#if GUJUN_CHANGE_D_TRANSFER
+			user = dest;
+			
+			*host = '\0';
+			dest_new = user_transfer(user,profile_name,switch_core_session_get_pool(nsession));
+			//switch_core_strdup(_pool, _todup)
+			
+			
+			if(dest_new){
+				if(check_loop_hash == NULL){
+					switch_core_hash_init(&check_loop_hash, switch_core_session_get_pool(nsession));
+
+				}
+				if(switch_core_hash_find(check_loop_hash,user)){
+
+						switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_WARNING, "transfer loops for user %s@%s\n", dest, host);
+					cause = SWITCH_CAUSE_USER_NOT_REGISTERED;
+					goto error;
+				}
+				else{
+					switch_core_hash_insert(check_loop_hash,switch_core_strdup(switch_core_session_get_pool(nsession),user),&flag);
+					data =dest_new;
+					goto direct_transfer;
+				}
+				
+			}
+			*host = '%';
+#else
 			char buf[1024];
+#endif
 			*host = '@';
 			tech_pvt->e_dest = switch_core_session_strdup(nsession, dest);
 			*host++ = '\0';
@@ -3314,13 +3568,68 @@ static switch_call_cause_t sofia_outgoing_channel(switch_core_session_t *session
 				goto error;
 			}
 		} else if (!(host = strchr(dest, '@'))) {
+#if GUJUN_CHANGE_D_TRANSFER
+			user = dest;
+			
+			dest_new = user_transfer(user,profile_name,switch_core_session_get_pool(nsession));
+			//switch_core_strdup(_pool, _todup)
+			
+			
+			if(dest_new){
+				if(check_loop_hash == NULL){
+					switch_core_hash_init(&check_loop_hash, switch_core_session_get_pool(nsession));
+
+				}
+				if(switch_core_hash_find(check_loop_hash,user)){
+					
+					switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_WARNING, "transfer loops for user %s@%s\n", dest, host);
+					cause = SWITCH_CAUSE_USER_NOT_REGISTERED;
+					goto error;
+				}
+				else{
+					switch_core_hash_insert(check_loop_hash,switch_core_strdup(switch_core_session_get_pool(nsession),user),&flag);
+					data =dest_new;
+					goto direct_transfer;
+				}
+				
+			}
+#else
 			char buf[1024];
+#endif
 			tech_pvt->e_dest = switch_core_session_strdup(nsession, dest);
 			if (sofia_reg_find_reg_url(profile, dest, profile_name, buf, sizeof(buf))) {
 				tech_pvt->dest = switch_core_session_strdup(nsession, buf);
 				tech_pvt->local_url = switch_core_session_sprintf(nsession, "%s@%s", dest, profile_name);
 				host = profile_name;
 			} else {
+#if GUJUN_CHANGE_D_TRANSFER
+				user = dest;
+				
+				*host = '\0';
+				dest_new = user_transfer(user,profile_name,switch_core_session_get_pool(nsession));
+				//switch_core_strdup(_pool, _todup)
+				
+				
+				if(dest_new){
+					if(check_loop_hash == NULL){
+						switch_core_hash_init(&check_loop_hash, switch_core_session_get_pool(nsession));
+
+					}
+					if(switch_core_hash_find(check_loop_hash,user)){
+						
+						switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_WARNING, "transfer loops for user %s@%s\n", dest, host);
+						cause = SWITCH_CAUSE_USER_NOT_REGISTERED;
+						goto error;
+					}
+					else{
+						switch_core_hash_insert(check_loop_hash,switch_core_strdup(switch_core_session_get_pool(nsession),user),&flag);
+						data =dest_new;
+						goto direct_transfer;
+					}
+					
+				}
+				*host = '@';
+#endif
 				switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_WARNING, "Cannot locate registered user %s@%s\n", dest, profile_name);
 				cause = SWITCH_CAUSE_USER_NOT_REGISTERED;
 				goto error;
@@ -3470,12 +3779,24 @@ static switch_call_cause_t sofia_outgoing_channel(switch_core_session_t *session
 	goto done;
 
   error:
+#if GUJUN_CHANGE_D_TRANSFER
+	if(check_loop_hash){
+		switch_core_hash_destroy(&check_loop_hash);
+		check_loop_hash = NULL;
+	}
+#endif
 	if (nsession) {
 		switch_core_session_destroy(&nsession);
 	}
 	*pool = NULL;
 
   done:
+#if GUJUN_CHANGE_D_TRANSFER
+	if(check_loop_hash){
+		switch_core_hash_destroy(&check_loop_hash);
+		check_loop_hash = NULL;
+	}
+#endif
 
 	if (profile) {
 		if (cause == SWITCH_CAUSE_SUCCESS) {
