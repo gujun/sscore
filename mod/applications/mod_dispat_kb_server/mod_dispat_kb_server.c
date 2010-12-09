@@ -88,7 +88,7 @@ static struct{
 	switch_event_node_t *channel_answer_event_node;
 	switch_event_node_t *channel_hangup_event_node;
 	switch_event_node_t *call_dispatcher_fail_event_node;
-
+	switch_event_node_t *dispat_cfg_event_node;
 	switch_hash_t *call_dispat_hash;
 	switch_mutex_t *call_dispat_mutex;
 	//switch_memory_pool_t *call_dispat_pool;
@@ -125,6 +125,7 @@ static struct{
 #define EVENT_CONFERENCE "conference::maintenance"
 #define EVENT_CALL_DISPATCHER_FAIL "event::custom::cdr"
 #define EVENT_DISPAT_KB "dispat_kb::info"
+#define DISPAT_CFG_EVENT "custom::cfg::dispat"
 
 typedef  switch_status_t (*command_api_function_t)(listener_t *listener, switch_event_t **event);
 typedef struct command_api{
@@ -762,6 +763,88 @@ static switch_status_t trap_all_gateways(listener_t *listener, switch_event_t **
 	return status;
 
 }
+static switch_status_t trap_all_dispatchers(listener_t *listener, switch_event_t **event)
+{
+	switch_status_t status = SWITCH_STATUS_SUCCESS;
+	char reply[128]="";
+	switch_size_t reply_len = sizeof(reply);
+	
+	switch_xml_t xml_root=NULL, cfg=NULL;
+	char *buf;
+	switch_size_t buf_len;
+	int err=0;
+	if((xml_root = switch_xml_open_cfg("dispat.conf",&cfg,NULL)) != NULL){
+		buf = switch_xml_toxml(cfg,SWITCH_FALSE);
+		if(buf == NULL){
+			err++;
+		}else{
+			buf_len = strlen(buf);
+			switch_snprintf(reply, sizeof(reply), "content-type:trap/all-dispatchers\ncontent-length:%d\n\n",buf_len);
+			reply_len = strlen(reply);
+			switch_socket_send(listener->sock,reply, &reply_len);
+			switch_socket_send(listener->sock,buf, &buf_len);
+			free(buf);
+			err = 0;
+		}
+		switch_xml_free(xml_root);
+	}
+	else{
+		err++;
+	}
+
+	if(err){
+		status = SWITCH_STATUS_FALSE;
+	}
+	
+	return status;
+}
+static switch_status_t trap_dispat_call_cfg(listener_t *listener, switch_event_t **event)
+{
+	switch_status_t status = SWITCH_STATUS_SUCCESS;
+	char  reply[128] = "";
+	switch_size_t reply_len = sizeof(reply);
+	
+	switch_stream_handle_t stream = { 0 };
+	char *apiReply = NULL;
+	switch_size_t apiReply_len = 0;
+	
+	char *cmd = "cfg";
+	
+	char *data = "show dispat dt";
+
+	SWITCH_STANDARD_STREAM(stream);
+	
+	if((status = switch_api_execute(cmd,data,NULL,&stream)) == SWITCH_STATUS_SUCCESS){
+		apiReply = stream.data;
+		
+	} else {
+		status =  SWITCH_STATUS_FALSE;
+		goto done;
+	}
+
+	if(!switch_strlen_zero(apiReply)){
+		
+		apiReply_len = strlen(apiReply);
+		switch_snprintf(reply, sizeof(reply), "content-type:trap/cfg-dispat-call\ncontent-length:%d\n\n",apiReply_len);
+		reply_len = strlen(reply);
+		switch_socket_send(listener->sock,reply, &reply_len);
+		switch_socket_send(listener->sock,apiReply, &apiReply_len);
+	}
+ done:
+	//switch_log_printf(SWITCH_CHANNEL_LOG,SWITCH_LOG_ERROR,"\n%s\n",apiReply);
+	//switch_log_printf(SWITCH_CHANNEL_LOG,SWITCH_LOG_ERROR,"\n%s\n",reply);
+	
+	switch_safe_free(stream.data);
+	return status;
+}
+static switch_status_t dispat_cfg_event_handler(listener_t *listener, switch_event_t **event)
+{
+
+	switch_status_t status = SWITCH_STATUS_SUCCESS;
+	status = trap_dispat_call_cfg(listener,NULL);
+	
+	return  status;
+}
 static switch_status_t reloadxml_event_handler(listener_t *listener, switch_event_t **event)
 {
 	/*if (switch_event_create_subclass(&s_event, SWITCH_EVENT_CUSTOM, MY_EVENT_EXPIRE) == SWITCH_STATUS_SUCCESS) {
@@ -777,7 +860,9 @@ static switch_status_t reloadxml_event_handler(listener_t *listener, switch_even
 	switch_status_t status = SWITCH_STATUS_SUCCESS;
 	status = trap_all_users(listener,NULL);
 	status = trap_all_gateways(listener,NULL);
-	
+	status = trap_all_dispatchers(listener,NULL);
+
+
 	return  status;
 }
 static switch_status_t  dispat_kb_event_handler(listener_t *listener, switch_event_t **event)
@@ -979,6 +1064,7 @@ static event_command_api_t event_command_api_s[]={
 	{SWITCH_EVENT_CUSTOM, EVENT_REGISTER_EXPIRE,reg_expire_event_handler},
 	{SWITCH_EVENT_CUSTOM,EVENT_DISPAT_KB,dispat_kb_event_handler},
 	{SWITCH_EVENT_CUSTOM,EVENT_CALL_DISPATCHER_FAIL,call_dispatcher_fail_event_handler},
+	{SWITCH_EVENT_CUSTOM,DISPAT_CFG_EVENT,dispat_cfg_event_handler},
 	{SWITCH_EVENT_RELOADXML,NULL,reloadxml_event_handler},
 	{SWITCH_EVENT_CHANNEL_PROGRESS,NULL,channel_progress_event_handler},
 	{SWITCH_EVENT_CHANNEL_PROGRESS_MEDIA,NULL,channel_progress_event_handler},
@@ -1864,6 +1950,62 @@ err:
 	switch_socket_send(listener->sock,reply, &reply_len);
 	return status;
 }
+static switch_status_t api_command(listener_t *listener, switch_event_t **event)
+{
+	switch_status_t status = SWITCH_STATUS_SUCCESS;
+	char  reply[128] = "";
+	switch_size_t reply_len = sizeof(reply);
+	
+	switch_stream_handle_t stream = { 0 };
+	char *apiReply = NULL;
+	switch_size_t apiReply_len = 0;
+	
+	char *cmd = switch_event_get_header(*event, "cmd");
+	
+	char *data = switch_event_get_header(*event, "data");
+	
+	if(cmd == NULL){
+		status =  SWITCH_STATUS_FALSE;
+		goto err;
+	}
+	
+	SWITCH_STANDARD_STREAM(stream);
+	
+	if((status = switch_api_execute(cmd,data,NULL,&stream)) == SWITCH_STATUS_SUCCESS){
+		apiReply = stream.data;
+		
+	} else {
+		status =  SWITCH_STATUS_FALSE;
+		goto err;
+	}
+
+	if(switch_strlen_zero(apiReply)){
+		switch_snprintf(reply, sizeof(reply), "content-type:reply/api\nreply-text:ok\n\n");
+		reply_len = strlen(reply);
+		switch_socket_send(listener->sock,reply, &reply_len);
+	}else {
+		
+		apiReply_len = strlen(apiReply);
+		switch_snprintf(reply, sizeof(reply), "content-type:reply/api\nreply-text:ok\ncontent-length:%d\n\n",apiReply_len);
+		reply_len = strlen(reply);
+		switch_socket_send(listener->sock,reply, &reply_len);
+		switch_socket_send(listener->sock,apiReply, &apiReply_len);
+	}
+	
+	goto done;
+	
+ err:
+	switch_snprintf(reply,  sizeof(reply), "content-type:reply/api\nreply-text:err\ndiscription:api error.\n\n");
+	reply_len = strlen(reply);
+	switch_socket_send(listener->sock,reply, &reply_len);
+ done:
+	//switch_log_printf(SWITCH_CHANNEL_LOG,SWITCH_LOG_ERROR,"\n%s\n",apiReply);
+	//switch_log_printf(SWITCH_CHANNEL_LOG,SWITCH_LOG_ERROR,"\n%s\n",reply);
+	
+	switch_safe_free(stream.data);
+	return status;
+}
+
 static command_api_t command_api_s[]={
 	{"auth",auth_command},
 	{"command/m-register",m_register_command},
@@ -1874,6 +2016,7 @@ static command_api_t command_api_s[]={
 	{"command/query-all-reg-users",query_all_reg_users_command},
 	{"command/query-all-current-calls",query_all_current_calls_command},
 	{"command/query-all-dispatchers",query_all_dispatchers_command},
+	{"command/api",api_command},
 	{"cfg",cfg_command},
 	{NULL,NULL}
 };
@@ -2417,7 +2560,10 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_dispat_kb_server_load)
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Couldn't bind!\n");
 		return SWITCH_STATUS_GENERR;
 	}
-
+	if (switch_event_bind_removable(modname, SWITCH_EVENT_CUSTOM, DISPAT_CFG_EVENT, event_handler, NULL, &globals.dispat_cfg_event_node) != SWITCH_STATUS_SUCCESS) {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Couldn't bind!\n");
+		return SWITCH_STATUS_GENERR;
+	}
 	if (switch_event_bind_removable(modname, SWITCH_EVENT_RELOADXML, NULL, event_handler, NULL, &globals.xml_event_node) != SWITCH_STATUS_SUCCESS) {
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Couldn't bind!\n");
 		return SWITCH_STATUS_GENERR;
@@ -2599,6 +2745,7 @@ SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_dispat_kb_server_shutdown)
 	//conference_event_node
 	switch_event_unbind(&globals.conference_event_node);
 	switch_event_unbind(&globals.xml_event_node);
+	switch_event_unbind(&globals.dispat_cfg_event_node);
 	//switch_event_unbind(&globals.node);
 
 	switch_safe_free(prefs.ip);

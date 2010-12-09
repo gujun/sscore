@@ -21,15 +21,20 @@
  * mod_dispat.c -- Audio stream dispatching Application Module
  */
 #include <switch.h>
+#define GUJUN_CHANGE_ANSWER 1
+#define GUJUN_CHANGE_FORWARDING 1
+
 
 SWITCH_MODULE_LOAD_FUNCTION(mod_dispat_load);
 SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_dispat_shutdown);
 SWITCH_MODULE_DEFINITION(mod_dispat,mod_dispat_load,mod_dispat_shutdown,NULL);
 
 #define DISPAT_CONF_FILE "dispat.conf"
+#define DISPAT_CALL_CONF_FILE "dispat_call.conf"
 
 #define CONF_EVENT_MAINT "conference::maintenance"
 #define DISPAT_EVENT "dispat::info"
+#define DISPAT_CFG_EVENT "custom::cfg::dispat"
 
 #define PRIVATE_VARIABLE_OF_API  "_conference_api_after_adding_"
 #define DISPAT_NAME_VARIABLE "_dispat_name_"
@@ -49,6 +54,10 @@ SWITCH_MODULE_DEFINITION(mod_dispat,mod_dispat_load,mod_dispat_shutdown,NULL);
 
 #define MAX_PHONE_NUM_LEN 24
 #define MAX_DIAL_DURATION 5000
+
+#define DISPAT_NODE_STATE_RESET_VAR  "diapat_node_state_reset"
+#define DISPAT_NODE_FORWARDING_VAR  "diapat_node_forwarding"
+#define DISPAT_NODE_FORWARDING_CURRENT_VAR  "diapat_node_forwarding_current"
 
 typedef void (*void_fn_t)(void);
 
@@ -123,7 +132,10 @@ typedef struct dispat_node {
 	switch_event_t *variables_event;
 
 	switch_queue_t *private_event_queue;
-
+#if GUJUN_CHANGE_FORWARDING
+	switch_queue_t *add_event_queue;
+	switch_queue_t *del_event_queue;
+#endif
 	switch_mutex_t  *mutex;
 	
 	switch_thread_rwlock_t *rwlock;
@@ -170,6 +182,8 @@ static struct {
 	switch_event_node_t *node;
 
 	switch_event_node_t *xml_event_node;
+	
+    switch_event_node_t *dispat_cfg_event_node;
 
 	switch_event_node_t *channel_hangup_event_node;
 
@@ -205,7 +219,15 @@ static struct {
 	int can_dispatch_dispatcher;
 
 	int endconf_after_inserting; /*need something like "conference endconf|unendconf memver_id", reserved now*/
-	
+
+	char *call_delim;
+
+	int direct_transfer_enable;
+
+	char *direct_transfer;
+
+	char *direct_transfer_period;
+
 }prefs;
 
 typedef struct {
@@ -216,6 +238,57 @@ typedef struct {
 
 }dtmf_handler_data_t;
 
+static switch_status_t load_call_conf()
+{
+	switch_status_t status = SWITCH_STATUS_SUCCESS;
+	switch_xml_t cfg=NULL, xml=NULL, settings=NULL,param=NULL;
+	
+	/*free prefs if nassecery*/
+	switch_safe_free(prefs.call_delim);
+	switch_safe_free(prefs.direct_transfer);
+	switch_safe_free(prefs.direct_transfer_period);
+
+	
+	if(!(xml = switch_xml_open_cfg(DISPAT_CALL_CONF_FILE,&cfg,NULL))){
+		switch_log_printf(SWITCH_CHANNEL_LOG,SWITCH_LOG_ERROR,"Open of %s failed\n",DISPAT_CALL_CONF_FILE);
+		status = SWITCH_STATUS_FALSE;
+	} else {
+		if(cfg && (settings = switch_xml_child(cfg,"settings"))){
+			for(param = switch_xml_child(settings,"param");param;param=param->next){
+				char *var = (char *)switch_xml_attr_soft(param,"name");
+				char *val = (char *)switch_xml_attr_soft(param,"value");
+
+				if(!strcmp(var,"call-delim")){
+					if(!switch_strlen_zero(val)){
+						prefs.call_delim = strdup(val);
+					}
+				} else if(!strcmp(var,"direct-transfer-enable")){
+					if(switch_true(val)){
+						prefs.direct_transfer_enable = 1;
+					} else {
+						prefs.direct_transfer_enable = 0;
+					}
+				} else if(!strcmp(var,"direct-transfer")){
+					if(!switch_strlen_zero(val)){
+						prefs.direct_transfer = strdup(val);
+					}
+				} else if(!strcmp(var,"direct-transfer-period")){
+					if(!switch_strlen_zero(val)){
+						prefs.direct_transfer_period = strdup(val);
+					}
+				}
+			}
+		}
+
+		
+
+		switch_xml_free(xml);
+	}
+
+	
+	return status;
+
+}
 static switch_status_t load_conf()
 {
 	switch_status_t status = SWITCH_STATUS_SUCCESS;
@@ -225,7 +298,7 @@ static switch_status_t load_conf()
 	void *val=NULL;
 	char * dispatcherID = NULL;
 	
-	memset(&prefs,0,sizeof(prefs));
+	/*free prefs if nassecery*/
 	
 	switch_mutex_lock(globals.dispatchers_mutex);
 	 while((hi = switch_hash_first(NULL,globals.dispatchers_hash)) != NULL){
@@ -252,11 +325,15 @@ static switch_status_t load_conf()
 				if(!strcmp(var,"can-dispatch-dispatcher")){
 					if(switch_true(val)){ 
 						prefs.can_dispatch_dispatcher = 1;
-					} 
-				} else if(!strcmp(var,"endconf_after_inserting")){
+					} else {
+						prefs.can_dispatch_dispatcher = 0;
+					}
+				}else if(!strcmp(var,"endconf_after_inserting")){
 					if(switch_true(val)){ 
 						prefs.endconf_after_inserting = 1;
-					} 
+					} else {
+						prefs.endconf_after_inserting = 0;
+					}
 				}
 			}
 		}
@@ -444,7 +521,10 @@ static dispat_node_t * dispat_node_new(const char *uuid,const char *channel_name
 	switch_event_create(&node->variables_event, SWITCH_EVENT_CHANNEL_DATA);
 	
 	switch_queue_create(&node->private_event_queue,SWITCH_CORE_QUEUE_LEN,pool);
-
+#if GUJUN_CHANGE_FORWARDING
+	switch_queue_create(&node->add_event_queue,SWITCH_CORE_QUEUE_LEN,pool);
+	switch_queue_create(&node->del_event_queue,SWITCH_CORE_QUEUE_LEN,pool);
+#endif
 	switch_mutex_init(&node->mutex, SWITCH_MUTEX_NESTED, pool);
 	
 	switch_thread_rwlock_create(&node->rwlock,pool);
@@ -793,7 +873,74 @@ static switch_status_t dispat_dequeue_private_event(dispat_node_t *node, switch_
 
 	return status;
 }
+#if GUJUN_CHANGE_FORWARDING
+static switch_status_t dispat_queue_add_event(dispat_node_t *node, switch_event_t **event)
+{
+	switch_status_t status = SWITCH_STATUS_FALSE;
+	
+	if(node && event && node->add_event_queue){
+		switch_mutex_lock(node->mutex);
+		(*event)->event_id = SWITCH_EVENT_PRIVATE_COMMAND;
+		if(switch_queue_trypush(node->add_event_queue,*event) == SWITCH_STATUS_SUCCESS){
+			(*event)= NULL;
+			status = SWITCH_STATUS_SUCCESS;
+		} 
+		switch_mutex_unlock(node->mutex);
+	}
 
+	return status;
+}
+static switch_status_t dispat_dequeue_add_event(dispat_node_t *node, switch_event_t **event)
+{
+	switch_status_t status = SWITCH_STATUS_FALSE;
+	void *pop;
+
+	if(node && event && node->add_event_queue){
+		switch_mutex_lock(node->mutex);
+		if((status = (switch_status_t)switch_queue_trypop(node->add_event_queue,&pop)) == SWITCH_STATUS_SUCCESS){
+			*event = (switch_event_t *)pop;
+		}
+		switch_mutex_unlock(node->mutex);
+	}
+
+	return status;
+}
+
+
+//del
+/*static switch_status_t dispat_queue_del_event(dispat_node_t *node, switch_event_t **event)
+{
+	switch_status_t status = SWITCH_STATUS_FALSE;
+	
+	if(node && event && node->del_event_queue){
+		switch_mutex_lock(node->mutex);
+		(*event)->event_id = SWITCH_EVENT_PRIVATE_COMMAND;
+		if(switch_queue_trypush(node->del_event_queue,*event) == SWITCH_STATUS_SUCCESS){
+			(*event)= NULL;
+			status = SWITCH_STATUS_SUCCESS;
+		} 
+		switch_mutex_unlock(node->mutex);
+	}
+
+	return status;
+}
+*/
+static switch_status_t dispat_dequeue_del_event(dispat_node_t *node, switch_event_t **event)
+{
+	switch_status_t status = SWITCH_STATUS_FALSE;
+	void *pop;
+
+	if(node && event && node->del_event_queue){
+		switch_mutex_lock(node->mutex);
+		if((status = (switch_status_t)switch_queue_trypop(node->del_event_queue,&pop)) == SWITCH_STATUS_SUCCESS){
+			*event = (switch_event_t *)pop;
+		}
+		switch_mutex_unlock(node->mutex);
+	}
+
+	return status;
+}
+#endif
 
 #define DISPAT_PRIVATE_API_CMD "dispat_private_api_cmd"
 #define DISPAT_PRIVATE_API_DATA "dispat_private_api_data"
@@ -884,6 +1031,99 @@ static switch_status_t dispat_clear_all_private_event(dispat_node_t *node)
 	return SWITCH_STATUS_FALSE;
 }
 
+#if GUJUN_CHANGE_FORWARDING
+
+static int dispat_add_event_count(dispat_node_t *node)
+{
+	int len = 0;
+	
+	if(node && node->add_event_queue){
+		switch_mutex_lock(node->mutex);
+		len = switch_queue_size(node->add_event_queue);
+		switch_mutex_unlock(node->mutex);
+	}
+
+	return len;
+}
+static int dispat_del_event_count(dispat_node_t *node)
+{
+	int len = 0;
+	
+	if(node && node->del_event_queue){
+		switch_mutex_lock(node->mutex);
+		len = switch_queue_size(node->del_event_queue);
+		switch_mutex_unlock(node->mutex);
+	}
+
+	return len;
+}
+
+
+static switch_status_t dispat_parse_next_add_event(dispat_node_t *node)
+{
+	switch_event_t *event;
+	
+	if(node && dispat_dequeue_add_event(node,&event) == SWITCH_STATUS_SUCCESS) {
+		dispat_parse_private_event(node,event);
+		switch_event_destroy(&event);
+		return SWITCH_STATUS_SUCCESS;
+	}
+	
+	return SWITCH_STATUS_FALSE;
+}
+static switch_status_t dispat_parse_next_del_event(dispat_node_t *node)
+{
+	switch_event_t *event;
+	
+	if(node && dispat_dequeue_del_event(node,&event) == SWITCH_STATUS_SUCCESS) {
+		dispat_parse_private_event(node,event);
+		switch_event_destroy(&event);
+		return SWITCH_STATUS_SUCCESS;
+	}
+	
+	return SWITCH_STATUS_FALSE;
+}
+
+static switch_status_t dispat_parse_all_add_event(dispat_node_t *node)
+{
+	while(dispat_parse_next_add_event(node) == SWITCH_STATUS_SUCCESS);
+	return SWITCH_STATUS_SUCCESS;
+}
+
+static switch_status_t dispat_parse_all_del_event(dispat_node_t *node)
+{
+	while(dispat_parse_next_del_event(node) == SWITCH_STATUS_SUCCESS);
+	return SWITCH_STATUS_SUCCESS;
+}
+
+static switch_status_t dispat_clear_all_add_event(dispat_node_t *node)
+{
+	switch_event_t *event;
+	
+	if(node){
+		while(dispat_dequeue_add_event(node,&event) == SWITCH_STATUS_SUCCESS) {
+			switch_event_destroy(&event);
+		}
+		return SWITCH_STATUS_SUCCESS;
+	}
+	
+	return SWITCH_STATUS_FALSE;
+}
+static switch_status_t dispat_clear_all_del_event(dispat_node_t *node)
+{
+	switch_event_t *event;
+	
+	if(node){
+		while(dispat_dequeue_del_event(node,&event) == SWITCH_STATUS_SUCCESS) {
+			switch_event_destroy(&event);
+		}
+		return SWITCH_STATUS_SUCCESS;
+	}
+	
+	return SWITCH_STATUS_FALSE;
+}
+
+#endif
 
 static switch_status_t dispat_node_free(dispat_node_t *node)
 {
@@ -895,7 +1135,10 @@ static switch_status_t dispat_node_free(dispat_node_t *node)
 			wrlock++;
 		}
 	    dispat_clear_all_private_event(node);
-	  	
+#if GUJUN_CHANGE_FORWARDING
+		dispat_clear_all_add_event(node);
+		dispat_clear_all_del_event(node);
+#endif
 	    switch_event_destroy(&node->variables_event);
          
 		if(wrlock){
@@ -950,7 +1193,7 @@ static switch_status_t user_node_free(user_node_t *node)
 
         switch_core_destroy_memory_pool(&node->pool);
 
-        //switch_log_printf(SWITCH_CHANNEL_LOG,SWITCH_LOG_ERROR,"destroy user:%s\n",node->name);
+ 
     }
 
     return SWITCH_STATUS_SUCCESS;
@@ -1019,7 +1262,12 @@ static switch_status_t dispat_handle_add(dispat_node_t *dispat_node,switch_event
 
 
 	/*handle private event*/
-
+#if GUJUN_CHANGE_FORWARDING
+	len = dispat_add_event_count(dispat_node);
+	if(len > 0){
+		dispat_parse_all_add_event(dispat_node);
+	}
+#endif
 	len = dispat_private_event_count(dispat_node);
 	if(len > 0){
 		dispat_parse_all_private_event(dispat_node);
@@ -1047,14 +1295,48 @@ static switch_status_t dispat_handle_del(dispat_node_t *dispat_node,switch_event
 	
 	
 	/*handle private event*/
+#if GUJUN_CHANGE_FORWARDING
+	if(dispat_del_event_count(dispat_node)>0){
+		dispat_parse_all_del_event(dispat_node);
+	}
+#endif
 	/*len = dispat_private_event_count(node);
 	if(len > 0){
 		dispat_parse_all_private_event(node);
 	}*/
 	
 	/*destroy dispat_node*/
+#if GUJUN_CHANGE_FORWARDING
+	{
+		int none = 0;
+		if(dispat_node->uuid != NULL){
+			dispat_node->session = switch_core_session_locate(dispat_node->uuid);
+			if(dispat_node->session != NULL){
+				switch_channel_t * channel = switch_core_session_get_channel(dispat_node->session);
+				if(channel != NULL ){
+					if (switch_channel_get_variable_dup(channel, DISPAT_NODE_STATE_RESET_VAR,SWITCH_FALSE)) {
+						switch_log_printf(SWITCH_CHANNEL_LOG,SWITCH_LOG_INFO,"%s var %s\n",dispat_node->name,
+										  DISPAT_NODE_STATE_RESET_VAR);						
+						none++;
+						switch_channel_set_variable(channel,DISPAT_NODE_STATE_RESET_VAR,NULL);
+					}
+					
+				}
+				switch_core_session_rwunlock(dispat_node->session);
+			}
+		}
 
+		if(none){
+			dispat_node->state =  DISPAT_NONE;
+		}else{
+			dispat_node->state =  DISPAT_END;
+		}
+		
+	}
+#else
 	dispat_node->state =  DISPAT_END;
+#endif
+
     //dispat_set_state(dispat_node,DISPAT_END);
 	
 	return status;
@@ -1466,7 +1748,11 @@ static void conference_event_handler(switch_event_t *event)
  *handle xml reload event
  */
 static void xml_event_handler(switch_event_t *event){
-         load_conf();	
+         load_conf();
+		 load_call_conf();
+}
+static void dispat_cfg_event_handler(switch_event_t *event){
+	load_call_conf();
 }
 static void channel_event_handler(switch_event_t *event){                                                                           
     const char *bound = switch_event_get_header(event,"Call-Direction");                                                            
@@ -1637,8 +1923,306 @@ done:
 	switch_safe_free(conference_name);
 	return status;
 }
+#if GUJUN_CHANGE_ANSWER
+static int query_callback(void *pArg, int argc, char **argv, char **columnNames){
+	char ** uuid = (char **)pArg;
+	int idx = -1;
+	
+	if(uuid == NULL){
+		return 0;
+	}
+	for (int i = 0; i < argc; i++) {
+		char *name = columnNames[i];
+		if (!name) {
+			continue;
+		}
+		if(!strcasecmp(name,"uuid")){
+			idx = i;
+			break;
+		}
+	}
+	if(idx < argc){
+		*uuid = strdup(argv[idx]);
+	}
+
+	return 0;
+}
+static switch_status_t get_uuid_from_user_input(char **uuid_output,const char *input){
+	char sql[1024];
+	char *errmsg = NULL;
+	switch_cache_db_handle_t *db = NULL;
+	char * uuid=NULL;
+	
+	if(switch_strlen_zero(input)){
+		return SWITCH_STATUS_FALSE;
+	}
+	if (switch_core_db_handle(&db) != SWITCH_STATUS_SUCCESS) {
+		
+		return SWITCH_STATUS_FALSE;
+	}
+	
+	//select uuid from channels where uuid like '%s' and direction like 'outbound'
+	switch_snprintf(sql, sizeof(sql), "select uuid from channels where uuid like '%s' and direction like 'outbound'",
+					input);
+	
+	switch_cache_db_execute_sql_callback(db, sql, query_callback, &uuid, &errmsg);
+
+	if(errmsg){
+		switch_core_db_free(errmsg);
+		errmsg = NULL;
+	}
+	if(uuid != NULL){
+		goto done;
+	}
+	//select uuid from channels where dest like '%s' and direction like 'outbound'
+	switch_snprintf(sql, sizeof(sql), "select uuid from channels where dest like '%s' and direction like 'outbound'",
+					input);
+	
+	switch_cache_db_execute_sql_callback(db, sql, query_callback, &uuid, &errmsg);
+
+	if(errmsg){
+		switch_core_db_free(errmsg);
+		errmsg = NULL;
+	}
+ done:
+	if (db) {
+		switch_cache_db_release_db_handle(&db);
+	}
+	if(uuid != NULL){
+		*uuid_output = uuid;
+	}
+	return SWITCH_STATUS_SUCCESS;
+}
+static switch_status_t dispat_hover_answer_function(switch_stream_handle_t *stream,dispat_node_t *node, char *argv[],int argc)
+{
+	switch_status_t status = SWITCH_STATUS_SUCCESS;
+	
+	switch_core_session_t * session = NULL;
+	switch_channel_t *channel=NULL;
+	
+	switch_caller_extension_t *extension = NULL;
+	switch_caller_extension_t *caller_extension = NULL;
+    char * conference_app_data = NULL;
+
+	char * user_num = NULL;
+	char * user_uuid = NULL;
+	switch_core_session_t * user_session = NULL;
+	switch_channel_t *user_channel=NULL;
+	
+	const char * caller_uuid = NULL;
+	switch_core_session_t * caller_session = NULL;
+	switch_channel_t *caller_channel=NULL;
+	
+	char *user_dial_str = NULL;
+	char *user_dial_str_exp=NULL;
+	
+    char * conference_name = NULL;
+
+	if(argc < 1 || argv[0] == NULL 
+	   || node == NULL  || (session = node->session) == NULL ){
+
+		if(stream != NULL){
+			stream->write_function(stream,"err,input fails!\n");
+		} else {
+			switch_log_printf(SWITCH_CHANNEL_LOG,SWITCH_LOG_ERROR,"err,input fails!\n");
+		}
+		
+		return SWITCH_STATUS_FALSE;
+	}
+	user_num = argv[0];
+
+	if(strlen(user_num) == 0){
+		if(stream != NULL){
+			stream->write_function(stream,"err,strlen(user_name) is 0!\n");
+		} else {
+			switch_log_printf(SWITCH_CHANNEL_LOG,SWITCH_LOG_ERROR,"err,strlen(user_name) is 0!\n");
+		}
+		return SWITCH_STATUS_FALSE;
+	}
+	
+	
+	channel = switch_core_session_get_channel(session);
+
+	if(channel == NULL || !switch_channel_ready(channel)){
+		if(stream != NULL){
+			stream->write_function(stream,"err,channel null!\n");
+		} else {
+			switch_log_printf(SWITCH_CHANNEL_LOG,SWITCH_LOG_ERROR,"err,channel null!\n");
+		}
+		
+		return SWITCH_STATUS_FALSE;
+	}
+
+	/*maybe get_user_id_from_channel_name(node->name)*/
+	//char * caller_id = dup_user_id_from_channel_name(node->name);
+	conference_name = switch_mprintf("%s[dispatanswer]-%s",node->name,user_num);
+	//if(caller_id  != NULL && caller_id != node->name){
+	//switch_safe_free(caller_id);
+	//}
+
+	if(conference_name == NULL){
+		return SWITCH_STATUS_FALSE;
+	}
+	
+	user_dial_str = switch_mprintf("user/%s@${domain_name}",user_num);
+	if(user_dial_str){
+		user_dial_str_exp = switch_channel_expand_variables(channel,user_dial_str);
+	}
+	if(user_dial_str_exp == NULL){
+		status = SWITCH_STATUS_MEMERR;
+		goto done;
+	}
+	
+	if(get_uuid_from_user_input(&user_uuid,user_num) != SWITCH_STATUS_SUCCESS || user_uuid == NULL){
+		if(stream != NULL){
+			stream->write_function(stream,"err,uuid  is null!\n");
+		} else {
+			switch_log_printf(SWITCH_CHANNEL_LOG,SWITCH_LOG_ERROR,"err,uuid is null!\n");
+		}
+		status =  SWITCH_STATUS_FALSE;
+		goto done;
+	}
+	user_session = switch_core_session_locate(user_uuid);
+	if(user_session == NULL){
+		if(stream != NULL){
+			stream->write_function(stream,"err,user_session  is null!\n");
+		} else {
+			switch_log_printf(SWITCH_CHANNEL_LOG,SWITCH_LOG_ERROR,"err,user_session is null!\n");
+		}
+		status = SWITCH_STATUS_FALSE;
+		goto done;
+	}
+	user_channel = switch_core_session_get_channel(user_session);
+	if(user_channel == NULL){
+		if(stream != NULL){
+			stream->write_function(stream,"err,user_channel  is null!\n");
+		} else {
+			switch_log_printf(SWITCH_CHANNEL_LOG,SWITCH_LOG_ERROR,"err,user_channel is null!\n");
+		}
+		status = SWITCH_STATUS_FALSE;
+		goto done;
+	}
+	caller_uuid = switch_channel_get_variable(user_channel, SWITCH_SIGNAL_BOND_VARIABLE);
+	if(caller_uuid == NULL){
+			if(stream != NULL){
+				stream->write_function(stream,"err,caller uuid  is null!\n");
+			} else {
+				switch_log_printf(SWITCH_CHANNEL_LOG,SWITCH_LOG_ERROR,"err,caller uuid is null!\n");
+			}
+			status = SWITCH_STATUS_FALSE;
+			goto done;
+		}
+	caller_session = switch_core_session_locate(caller_uuid);
+	if(caller_session == NULL){
+		if(stream != NULL){
+			stream->write_function(stream,"err,caller_session  is null!\n");
+		} else {
+			switch_log_printf(SWITCH_CHANNEL_LOG,SWITCH_LOG_ERROR,"err,caller_session is null!\n");
+		}
+		status = SWITCH_STATUS_FALSE;
+		goto done;
+	}
+	
+	caller_channel = switch_core_session_get_channel(caller_session);
+	if(caller_channel == NULL){
+		if(stream != NULL){
+			stream->write_function(stream,"err,caller_channel  is null!\n");
+		} else {
+			switch_log_printf(SWITCH_CHANNEL_LOG,SWITCH_LOG_ERROR,"err,caller_channel is null!\n");
+		}
+		status = SWITCH_STATUS_FALSE;
+		goto done;
+	}
+
+	if (switch_channel_test_flag(caller_channel, CF_ANSWERED)) {
+		status = SWITCH_STATUS_FALSE;
+		goto done;
+	}
+	if(!switch_channel_ready(user_channel)){
+		status = SWITCH_STATUS_FALSE;
+		goto done;
+	}
 
 
+	conference_app_data = switch_mprintf("%s@default",conference_name);
+	
+	if(conference_app_data == NULL) {
+		status = SWITCH_STATUS_MEMERR;
+		goto done;
+	}
+	
+	if((extension = switch_caller_extension_new(session,conference_name,conference_name)) != 0) {
+
+		
+		switch_caller_extension_add_application(session,extension,CONFERENCE_APP_COMMAND,conference_app_data);
+
+		switch_channel_set_caller_extension(channel,extension);
+		switch_channel_set_flag(channel,CF_RESET);
+		
+		//node->state = DISPAT_BRIDGE;
+		
+		//switch_safe_free(conference_app_data);
+		
+	}else {
+
+		
+		if(stream != NULL){
+			stream->write_function(stream,"err,new extension fail!\n");
+		} else {
+			switch_log_printf(SWITCH_CHANNEL_LOG,SWITCH_LOG_ERROR,"new extension fail!\n");
+		}
+		status = SWITCH_STATUS_MEMERR;
+		goto done;
+	}
+
+	if((caller_extension = switch_caller_extension_new(caller_session,conference_name,conference_name)) != 0) {
+
+		
+		switch_caller_extension_add_application(caller_session,caller_extension,CONFERENCE_APP_COMMAND,conference_app_data);
+
+		switch_channel_set_caller_extension(caller_channel,caller_extension);
+		switch_channel_set_flag(caller_channel,CF_RESET);
+		
+		
+	}else {
+
+		
+		if(stream != NULL){
+			stream->write_function(stream,"err,new caller_extension fail!\n");
+		} else {
+			switch_log_printf(SWITCH_CHANNEL_LOG,SWITCH_LOG_ERROR,"new caller_extension fail!\n");
+		}
+		status = SWITCH_STATUS_MEMERR;
+		switch_channel_hangup(channel,SWITCH_CAUSE_NORMAL_CLEARING);
+		dispat_set_state(node,DISPAT_BRIDGE);
+		goto done;
+	}
+	
+	switch_channel_hangup(user_channel,SWITCH_CAUSE_NORMAL_CLEARING);
+	dispat_set_state(node,DISPAT_BRIDGE);
+ done:
+	
+	if(user_dial_str_exp && user_dial_str_exp != user_dial_str){
+		switch_safe_free(user_dial_str_exp);
+	}
+	if(user_uuid && user_uuid != user_num){
+		switch_safe_free(user_uuid);
+	}
+	if(user_session){
+		switch_core_session_rwunlock(user_session);
+	}
+
+	
+	if(caller_session){
+		switch_core_session_rwunlock(caller_session);
+	}
+	
+	switch_safe_free(conference_app_data);
+	switch_safe_free(user_dial_str);
+	switch_safe_free(conference_name);
+	return status;
+}
+#endif
 
 static switch_status_t dispat_hover_hear_function(switch_stream_handle_t *stream,dispat_node_t *node, char *argv[],int argc)
 {
@@ -1942,7 +2526,12 @@ static switch_status_t dispat_hover_grab_function(switch_stream_handle_t *stream
 		if (switch_event_create(&event, SWITCH_EVENT_COMMAND) == SWITCH_STATUS_SUCCESS) {
 			switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, DISPAT_PRIVATE_API_CMD, CONFERENCE_API_COMMAND);
 			switch_event_add_header(event, SWITCH_STACK_BOTTOM, DISPAT_PRIVATE_API_DATA, "%s kick %s",conference_name,conference_member_id);
-			if(dispat_queue_private_event(node, &event) != SWITCH_STATUS_SUCCESS){
+#if 0 //GUJUN_CHANGE_FORWARDING
+			if(dispat_queue_add_event(node, &event) != SWITCH_STATUS_SUCCESS){
+#else
+				if(dispat_queue_private_event(node, &event) != SWITCH_STATUS_SUCCESS){
+#endif
+				
 				switch_event_destroy(&event);
 				status = SWITCH_STATUS_FALSE;
 				goto done;
@@ -1955,8 +2544,14 @@ static switch_status_t dispat_hover_grab_function(switch_stream_handle_t *stream
 		if (switch_event_create(&event, SWITCH_EVENT_COMMAND) == SWITCH_STATUS_SUCCESS) {
 			switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, DISPAT_PRIVATE_API_CMD, CONFERENCE_API_COMMAND);
 			switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, DISPAT_PRIVATE_API_DATA, "${conference_name} unmute ${conference_member_id}");
-			if(dispat_queue_private_event(node, &event) != SWITCH_STATUS_SUCCESS){
-				dispat_clear_all_private_event(node);
+#if 0 // GUJUN_CHANGE_FORWARDING
+			if(dispat_queue_add_event(node, &event) != SWITCH_STATUS_SUCCESS){
+				dispat_clear_all_add_event(node);
+#else
+				if(dispat_queue_private_event(node, &event) != SWITCH_STATUS_SUCCESS){
+					dispat_clear_all_private_event(node);
+#endif
+
 				switch_event_destroy(&event);
 				status = SWITCH_STATUS_FALSE;
 				goto done;
@@ -2235,6 +2830,9 @@ static switch_status_t dispat_hover_unmoderator_function(switch_stream_handle_t 
 */
 static dispat_api_t dispat_hover_api_s[]={
 	{"call",(dispat_api_function_t)&dispat_hover_bridge_function,"dispatcher_number <call> user_number"},
+#if GUJUN_CHANGE_ANSWER
+	{"answer",(dispat_api_function_t)&dispat_hover_answer_function,"dispatcher_number <answer> user_uuid|user_number"},
+#endif
 	{"hear",(dispat_api_function_t)&dispat_hover_hear_function,"dispatcher_number <hear> user_number"},
 	{"insert",(dispat_api_function_t)&dispat_hover_insert_function,"dispatcher_number <hear> user_number"},
 	{"grab",(dispat_api_function_t)&dispat_hover_grab_function,"dispatcher_number <grab> user_number"},
@@ -2251,7 +2849,221 @@ static dispat_api_t dispat_hover_api_s[]={
 	{NULL,NULL,NULL}
 };
 
+#if GUJUN_CHANGE_FORWARDING
+ static switch_status_t dispat_group_forwarding_function(switch_stream_handle_t *stream,dispat_node_t *node, char *argv[],int argc)
+ {
+	 switch_status_t status = SWITCH_STATUS_SUCCESS;
 
+	 char *data = NULL;
+	 switch_stream_handle_t mystream = { 0 };
+	 
+	 char * user_num = NULL;
+	 char *user_dial_str = NULL;
+	 char *user_dial_str_exp=NULL;
+	 
+	 
+	 char * dispat_conference_name = NULL;
+	 char * new_conference_name = NULL;
+       
+	 switch_channel_t *channel = NULL;
+	 const char *var = NULL;
+	 char * new_var = NULL;
+
+
+	 switch_event_t *event=NULL;
+
+	 switch_caller_extension_t *extension = NULL;
+
+
+	 if(argc < 1 || argv[0] == NULL || node == NULL ) {
+
+		 if(stream != NULL){
+			 stream->write_function(stream,"err,input fails!\n");
+		 } else {
+			 switch_log_printf(SWITCH_CHANNEL_LOG,SWITCH_LOG_ERROR,"input fails!\n");
+		 }
+		 
+		 return SWITCH_STATUS_FALSE;
+	 }
+	 user_num = argv[0];
+
+	 if(strlen(user_num) == 0){
+		 if(stream != NULL){
+			 stream->write_function(stream,"err,strlen(user_num) is 0!\n");
+		 } else {
+			 switch_log_printf(SWITCH_CHANNEL_LOG,SWITCH_LOG_ERROR,"strlen(user_num) is 0!\n");
+		 }
+		 return SWITCH_STATUS_FALSE;
+	 }
+
+
+	 //dispat_conference_name = switch_event_get_header(node->variables_event,"conference_name");
+	 
+
+	 if(switch_strlen_zero(node->conference_name) ||
+		switch_strlen_zero(node->uuid) ||
+		switch_strlen_zero(node->conference_member_id) ||
+		node->session == NULL ||
+		(channel = switch_core_session_get_channel(node->session)) == NULL ||
+		!switch_channel_ready(channel)){
+		 return SWITCH_STATUS_FALSE;
+	 }
+	 dispat_conference_name = node->conference_name;
+
+	 
+	 /*prepare user dial string*/
+	 user_dial_str = switch_mprintf("user/%s@${domain_name}",user_num);
+	 if(user_dial_str ){
+		 user_dial_str_exp = switch_channel_expand_variables(channel,user_dial_str);
+	 }
+	 if(user_dial_str_exp == NULL){
+		 status =  SWITCH_STATUS_FALSE;
+		 goto done;
+	 }
+
+	 new_conference_name = switch_mprintf("%s[dispatcall]-%s",dispat_conference_name,user_num);
+	 if(new_conference_name == NULL){
+		 status =  SWITCH_STATUS_FALSE;
+		 goto done;
+	 }
+	 
+	 //DISPAT_NODE_FORWARDING_VAR
+	 var = switch_channel_get_variable(channel, DISPAT_NODE_FORWARDING_VAR);
+	 if(var != NULL){
+		 new_var = switch_mprintf("%s;%s",var,dispat_conference_name);
+	 }else{
+		 new_var =  dispat_conference_name;
+	 }
+	 
+	 
+	 
+	 
+	 
+
+	 
+	 
+
+	 if (switch_event_create(&event, SWITCH_EVENT_COMMAND) == SWITCH_STATUS_SUCCESS) {
+		 switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, DISPAT_PRIVATE_API_CMD, CONFERENCE_API_COMMAND);
+		 switch_event_add_header(event, SWITCH_STACK_BOTTOM, DISPAT_PRIVATE_API_DATA, "%s min 2",dispat_conference_name);
+		 if(dispat_queue_add_event(node, &event) != SWITCH_STATUS_SUCCESS){
+			 switch_event_destroy(&event);
+			 status = SWITCH_STATUS_FALSE;
+		 }
+	 } else {
+		 status = SWITCH_STATUS_MEMERR;
+	 }
+
+	 if (switch_event_create(&event, SWITCH_EVENT_COMMAND) == SWITCH_STATUS_SUCCESS) {
+		 switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, DISPAT_PRIVATE_API_CMD, CONFERENCE_API_COMMAND);
+		 switch_event_add_header(event, SWITCH_STACK_BOTTOM, DISPAT_PRIVATE_API_DATA, "${conference_name} back  %s",dispat_conference_name);
+		 if(dispat_queue_add_event(node, &event) != SWITCH_STATUS_SUCCESS){
+			 dispat_clear_all_add_event(node);
+			 switch_event_destroy(&event);
+			 status = SWITCH_STATUS_FALSE;
+		 }
+	 } else {
+
+		 status = SWITCH_STATUS_MEMERR;
+	 }
+
+	 if (switch_event_create(&event, SWITCH_EVENT_COMMAND) == SWITCH_STATUS_SUCCESS) {
+		 switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, DISPAT_PRIVATE_API_CMD, CONFERENCE_API_COMMAND);
+		 switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, DISPAT_PRIVATE_API_DATA, "${conference_name} min 2");
+		 if(dispat_queue_add_event(node, &event) != SWITCH_STATUS_SUCCESS){
+			 dispat_clear_all_add_event(node);
+			 switch_event_destroy(&event);
+			 status = SWITCH_STATUS_FALSE;
+		 }
+	 } else {
+
+		 status = SWITCH_STATUS_MEMERR;
+	 }
+        
+	 if (switch_event_create(&event, SWITCH_EVENT_COMMAND) == SWITCH_STATUS_SUCCESS) {
+		 switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, DISPAT_PRIVATE_API_CMD, CONFERENCE_API_COMMAND);
+		 switch_event_add_header(event, SWITCH_STACK_BOTTOM, DISPAT_PRIVATE_API_DATA, "${conference_name} bgdial  %s",user_dial_str_exp);
+		 if(dispat_queue_add_event(node, &event) != SWITCH_STATUS_SUCCESS){
+			 dispat_clear_all_add_event(node);
+			 switch_event_destroy(&event);
+			 status = SWITCH_STATUS_FALSE;
+		 }
+	 } else {
+
+		 status = SWITCH_STATUS_MEMERR;
+	 }
+        
+	 switch_safe_free(data);
+	 if((extension = switch_caller_extension_new(node->session,new_conference_name,new_conference_name)) != 0 &&
+        (data = switch_mprintf("%s",new_conference_name)) != NULL) {
+
+		 switch_caller_extension_add_application(node->session,extension,CONFERENCE_APP_COMMAND,data);
+		 //switch_caller_extension_add_application(session,extension,CONFERENCE_APP_COMMAND,data);
+
+		 switch_channel_set_caller_extension(channel,extension);
+		 switch_channel_set_variable(channel,DISPAT_NODE_FORWARDING_VAR,new_var);
+		 switch_channel_set_variable(channel,DISPAT_NODE_FORWARDING_CURRENT_VAR,new_conference_name);
+		 switch_channel_set_variable(channel,DISPAT_NODE_STATE_RESET_VAR,"true");
+		 switch_channel_set_flag(channel,CF_RESET);
+
+		 //node->state = DISPAT_GRAB;
+		 //dispat_set_state(node,DISPAT_GRAB);
+
+	 }else {
+
+		 dispat_clear_all_add_event(node);
+
+
+		 if(stream != NULL){
+			 stream->write_function(stream,"err,new caller_extension fail!\n");
+		 } else {
+			 switch_log_printf(SWITCH_CHANNEL_LOG,SWITCH_LOG_ERROR,"new caller_extension fail!\n");
+		 }
+		 status = SWITCH_STATUS_MEMERR;
+	 }
+            
+	 
+	 SWITCH_STANDARD_STREAM(mystream);
+	 /*gbdail user*/
+	 //memset(cmdbuf,0,sizeof(cmdbuf));
+	 //switch_snprintf(cmdbuf,sizeof(cmdbuf),"%s nomin",dispat_conference_name);
+	 switch_safe_free(data);
+	 data = switch_mprintf("%s nomin",dispat_conference_name);
+	 if((status = switch_api_execute(CONFERENCE_API_COMMAND,data,NULL,&mystream)) == SWITCH_STATUS_SUCCESS){
+		 /*not change dispat state*/
+		 
+	 } else {
+		 status = SWITCH_STATUS_FALSE;
+	 }
+	        
+	 switch_safe_free(data);
+	 data = switch_mprintf("%s kick %s",dispat_conference_name,node->conference_member_id);
+	 if((status = switch_api_execute(CONFERENCE_API_COMMAND,data,NULL,&mystream)) == SWITCH_STATUS_SUCCESS){
+		 /*not change dispat state*/
+		 
+	 } else {
+		 status = SWITCH_STATUS_FALSE;
+	 }
+	 switch_safe_free(mystream.data);
+	 
+ done:
+	 
+	 
+	 switch_safe_free(data);
+	 
+	 if(new_var &&  new_var != dispat_conference_name){
+	      switch_safe_free(new_var);
+      }
+     switch_safe_free(new_conference_name);
+ 
+    if(user_dial_str_exp &&  user_dial_str_exp != user_dial_str){
+		switch_safe_free(user_dial_str_exp);
+	}
+	switch_safe_free(user_dial_str);
+	
+	return status;
+}
+#endif
 static switch_status_t dispat_group_add_member_function(switch_stream_handle_t *stream,dispat_node_t *node, char *argv[],int argc)
 {
 	switch_status_t status = SWITCH_STATUS_SUCCESS;
@@ -2767,6 +3579,9 @@ static dispat_api_t dispat_group_api_s[]={
 	{"moderator",(dispat_api_function_t)&dispat_group_moderator_member_function,"dispatcher_number <moderator> user_number"},
 	{"unmoderator",(dispat_api_function_t)&dispat_group_unmoderator_function,"dispatcher_number <unmoderator>"},
 	{"unbridge",(dispat_api_function_t)&dispat_hover_unbridge_function,"dispatcher_number <unbridge> user_number"},
+#if GUJUN_CHANGE_FORWARDING
+	{"forward",(dispat_api_function_t)&dispat_group_forwarding_function,"dispatcher_number <forward> user_number"},
+#endif
 	{NULL,NULL,NULL}
 };
 
@@ -2817,6 +3632,9 @@ static dispat_api_t dispat_insert_api_s[]={
 	{"moderator",(dispat_api_function_t)&dispat_insert_moderator_member_function,"dispatcher_number <moderator> user_number"},
 	{"unmoderator",(dispat_api_function_t)&dispat_insert_unmoderator_function,"dispatcher_number <unmoderator>"},
 	{"unbridge",(dispat_api_function_t)&dispat_hover_unbridge_function,"dispatcher_number <unbridge> user_number"},
+#if GUJUN_CHANGE_FORWARDING
+	{"forward",(dispat_api_function_t)&dispat_group_forwarding_function,"dispatcher_number <forward> user_number"},
+#endif
 	{NULL,NULL,NULL}
 };
 
@@ -2867,6 +3685,9 @@ static dispat_api_t dispat_bridge_api_s[]={
 	{"moderator",(dispat_api_function_t)&dispat_bridge_moderator_member_function,"dispatcher_number <moderator> user_number"},
 	{"unmoderator",(dispat_api_function_t)&dispat_bridge_unmoderator_function,"dispatcher_number <unmoderator>"},
 	{"unbridge",(dispat_api_function_t)&dispat_hover_unbridge_function,"dispatcher_number <unbridge> user_number"},
+#if GUJUN_CHANGE_FORWARDING
+	{"forward",(dispat_api_function_t)&dispat_group_forwarding_function,"dispatcher_number <forward> user_number"},
+#endif
 	{NULL,NULL,NULL}
 };
 
@@ -2916,6 +3737,9 @@ static dispat_api_t dispat_grab_api_s[]={
 	{"moderator",(dispat_api_function_t)&dispat_grab_moderator_member_function,"dispatcher_number <moderator> user_number"},
 	{"unmoderator",(dispat_api_function_t)&dispat_grab_unmoderator_function,"dispatcher_number <unmoderator>"},
 	{"unbridge",(dispat_api_function_t)&dispat_hover_unbridge_function,"dispatcher_number <unbridge> user_number"},
+#if GUJUN_CHANGE_FORWARDING
+	{"forward",(dispat_api_function_t)&dispat_group_forwarding_function,"dispatcher_number <forward> user_number"},
+#endif
 	{NULL,NULL,NULL}
 };
 static switch_status_t dispat_hear_grab_function(switch_stream_handle_t *stream,dispat_node_t *node, char *argv[],int argc)
@@ -3154,7 +3978,8 @@ static switch_status_t dispat_conf_function(switch_stream_handle_t *stream,dispa
 		}
 	}
 
-	status = load_conf();
+	load_conf();
+	load_call_conf(); 
 	
 	stream->write_function(stream,"ok,dispat configuration reload.\n");
 	
@@ -3302,8 +4127,62 @@ static dispat_api_t dispat_api_s[]={
 		{"line",dispat_line_function,"line show all diaptchers on line"},
 		{"conf",dispat_conf_function,"conf reload"}
 };
-#define DISPATCHERS_CALL_SYNTAX "<dispatchers_call> domain"
-SWITCH_STANDARD_API(dispatchers_call_function)
+
+#define DISPATCHERS_CALL_TRANSFER_SYNTAX "<dispatchers_call> domain"
+SWITCH_STANDARD_API(dispatchers_call_transfer_function)
+{
+	//const char *domain = NULL;
+
+	int ok = 0;
+	char *data = NULL;
+
+
+	/*
+	if(cmd != NULL && !switch_strlen_zero(cmd)){
+		domain = cmd;
+	}
+	else{
+		domain = switch_core_get_variable("domain");
+	}
+
+	if(domain == NULL || switch_strlen_zero(domain)){
+		goto end;
+	}*/
+	if(prefs.direct_transfer == NULL){
+		goto end;
+	}
+
+
+	if((data = strdup(prefs.direct_transfer)) != NULL){
+		char c = end_of(data);
+		char *p;
+		
+		if(c == ',' || c == '|'){
+			end_of(data) = '\0';
+		}
+
+		for(p = data;p && *p; p++){
+			if(*p == '{'){
+				*p = '[';
+			}else if(*p == '}'){
+				*p = ']';
+			}
+		}
+		stream->write_function(stream,"%s",data);
+		ok++;
+		free(data);
+	}
+ end:
+
+
+	if(!ok){
+		stream->write_function(stream,"error/NO_ROUTE_DESTINATION");
+	}
+	return SWITCH_STATUS_SUCCESS;
+
+}
+#define DISPATCHERS_CALL_NORMAL_SYNTAX "<dispatchers_call> domain"
+SWITCH_STANDARD_API(dispatchers_call_normal_function)
 {
 	const char *domain = NULL;
 
@@ -3315,9 +4194,11 @@ SWITCH_STANDARD_API(dispatchers_call_function)
 	switch_hash_index_t *hi = NULL,*next = NULL;
 	void *val = NULL;
 
-	const char *call_delim = ",";
+	char *call_delim = ",";
 
-	
+	if(!switch_strlen_zero(prefs.call_delim)){
+		call_delim = prefs.call_delim;
+	}
 	if(cmd != NULL && !switch_strlen_zero(cmd)){
 		domain = cmd;
 	}
@@ -3385,6 +4266,135 @@ SWITCH_STANDARD_API(dispatchers_call_function)
 		stream->write_function(stream,"error/NO_ROUTE_DESTINATION");
 	}
 	return SWITCH_STATUS_SUCCESS;
+}
+static int check_period(const char *now,const char *start,const char *end){
+    int ret = 0;
+	char *now_dup= NULL,*start_dup=NULL,*end_dup = NULL;
+    char *h = NULL,*m = NULL;
+    int now_h = 0,now_m = 0,now_t = 0;
+    int start_h = 0,start_m = 0,start_t = 0;
+    int end_h =0 ,end_m = 0,end_t = 0;
+
+    if(switch_strlen_zero(now) || switch_strlen_zero(start) || switch_strlen_zero(end)){
+        return 0;
+    }
+	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, "check %s  between %s~%s ",now,start,end);
+	 
+#define getHM(S,D,H,M,T) \
+	D = strdup(S); \
+	if(D == NULL){ \
+		goto done; \
+    } \
+    h = D; \
+    m = strchr(h,':'); \
+    if(m == NULL){ \
+		goto done; \
+    } \
+    *m++='\0'; \
+    H = atoi(h); \
+    H = H%24; \
+    M = atoi(m); \
+    M = M%60; \
+	T = H*60+M;
+
+	getHM(now,now_dup,now_h,now_m,now_t);
+	getHM(start,start_dup,start_h,start_m,start_t);
+	getHM(end,end_dup,end_h,end_m,end_t);
+
+	if(end_t >= start_t){
+		if(start_t <= now_t && now_t <= end_t){
+			ret  = 1;
+		}
+	}
+	else{
+		if(now_t >= start_t || now_t <= end_t){
+			ret = 1;
+		}
+	}
+ done:
+	if(now_dup){
+		free(now_dup);
+	}
+	if(start_dup){
+		free(start_dup);
+	}
+	if(end_dup){
+		free(end_dup);
+	}
+	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, ", ret is %d\n",ret);
+	return ret;
+}
+static int check_direct_transfer_period(const char *period){
+
+	int argc;
+    char *argv[25] = { 0 };
+    char *lbuf = NULL;
+
+    switch_time_t start_time;
+    switch_time_exp_t start_time_exp;
+    char time_str[80]="";
+    switch_size_t retsize;
+
+    char *start,*end;
+    int ret = 0;
+
+    if(switch_strlen_zero(period)){
+        return 1;
+    }
+    if(!(lbuf = strdup(period))){
+        return 0;
+    }
+    argc = switch_separate_string(lbuf,',',argv,(sizeof(argv)/sizeof(argv[0])));
+    if(argc < 1){
+        goto done;
+    }
+	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, "separte %s into %d period\n",lbuf,argc);
+    start_time = switch_micro_time_now();
+    switch_time_exp_lt(&start_time_exp,start_time);
+    switch_strftime_nocheck(time_str,&retsize,sizeof(time_str),"%H:%M",&start_time_exp);//"%Y-%m-%d %H:%M:%S",&start_time_exp);
+
+    for(int i = 0 ; i < argc ; i++){
+        start = argv[i];
+        if(start == NULL){
+            continue;
+        }
+        end = strchr(start,'-');
+        if(end == NULL){
+            continue;
+        }
+        *end++ = '\0';
+
+        if((ret = check_period(time_str,start,end))){
+            break;
+        }
+    }
+
+ done:
+    if(lbuf){
+        free(lbuf);
+    }
+    return ret;
+}
+
+#define DISPATCHERS_CALL_SYNTAX "<dispatchers_call> domain"
+SWITCH_STANDARD_API(dispatchers_call_function)
+{
+	int transfer_ok = 0;
+	
+	if(prefs.direct_transfer_enable && prefs.direct_transfer){
+		if(switch_strlen_zero(prefs.direct_transfer_period)){
+			transfer_ok++;
+		} else {
+			if(check_direct_transfer_period(prefs.direct_transfer_period)){
+				transfer_ok++;
+			}
+		}
+	}
+	if(transfer_ok){
+		return dispatchers_call_transfer_function(cmd,session,stream);
+	}
+	return dispatchers_call_normal_function(cmd,session,stream);
+
 }
 
 #define DISPAT_SYNTAX "<dispatch> <who>  hear|grab|unbridge|group_call  <data>"
@@ -3980,6 +4990,11 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_dispat_load)
 				conference_event_handler,NULL,&globals.conference_event_node) != SWITCH_STATUS_SUCCESS) {
 		return SWITCH_STATUS_GENERR;
 	}
+	if(switch_event_bind_removable(modname, SWITCH_EVENT_CUSTOM,DISPAT_CFG_EVENT,
+				dispat_cfg_event_handler,NULL,&globals.dispat_cfg_event_node) != SWITCH_STATUS_SUCCESS) {
+		return SWITCH_STATUS_GENERR;
+	}
+
 	/*if(switch_event_bind_removable(modname,SWITCH_EVENT_PRESENCE_PROBE, SWITCH_EVENT_SUBCLASS_ANY, 
 									pres_event_handler,NULL, &globals.node) != SWITCH_STATUS_SUCCESS) {
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,"Coundn't subscribe to SWITCH_EVENT_PRESENCE_PROBE events!\n");
@@ -4016,10 +5031,13 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_dispat_load)
 	// SWITCH_ADD_API(commands_api_interface,"dispat_get_conference_name","dispat_get_conference_name",dispat_get_conference_name,DISPAT_GET_CONFERENCE_NAME_SYNTAX);
 	//SWITCH_ADD_API(commands_api_interface,"dispat_conference","dispat_conference",dispat_conference,DISPAT_CONFERENCE_SYNTAX);
 	switch_console_set_complete("add dispat");
+
+	memset(&prefs,0,sizeof(prefs));
+	load_conf();
+	load_call_conf();
 	
 	globals.running = 1;
 
-	load_conf();
 
 	/* indicate that the module should continue to be loaded */
 	return SWITCH_STATUS_SUCCESS;
@@ -4039,6 +5057,7 @@ SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_dispat_shutdown)
 
 	switch_event_unbind(&globals.node);
 	switch_event_unbind(&globals.conference_event_node);
+	switch_event_unbind(&globals.dispat_cfg_event_node);
     switch_event_unbind(&globals.xml_event_node);
 	switch_event_unbind(&globals.channel_hangup_event_node);
        

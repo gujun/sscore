@@ -2191,8 +2191,8 @@ static char *switch_xml_toxml_r(switch_xml_t xml, char **s, switch_size_t *len, 
 		*len += sprintf(*s + *len, "\"");
 	}
 
-	*len += sprintf(*s + *len, (xml->child || xml->txt) ? ">" : "/>\n");
-
+	//*len += sprintf(*s + *len, (xml->child || xml->txt) ? ">" : "/>\n");
+	*len += sprintf(*s + *len, (xml->child || xml->txt) ? ">" : "/>");
 	if (xml->child) {
 		(*count)++;
 		*s = switch_xml_toxml_r(xml->child, s, len, max, 0, attr, count);
@@ -2214,7 +2214,8 @@ static char *switch_xml_toxml_r(switch_xml_t xml, char **s, switch_size_t *len, 
 				*len += sprintf(*s + *len, "%s", XML_INDENT);	/* indent */
 			}
 		}
-		*len += sprintf(*s + (*len), "</%s>\n", xml->name);	/* close tag */
+		//*len += sprintf(*s + (*len), "</%s>\n", xml->name);	/* close tag */
+		*len += sprintf(*s + (*len), "</%s>", xml->name);	/* close tag */
 	}
 
 	while (txt[off] && off < xml->off)
