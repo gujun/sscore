@@ -292,13 +292,16 @@ static void channel_event_handler(switch_event_t *event){
 
 	//}
 
+
+
 	if(event_type == SWITCH_EVENT_CHANNEL_PROGRESS ||
 	   event_type == SWITCH_EVENT_CHANNEL_PROGRESS_MEDIA){
+
 		if(bound && context_extension &&
 		  !strcmp(bound,"inbound") &&
 		  !strcmp(context_extension,"dispatcher") ){
 			//switch_log_printf(SWITCH_CHANNEL_LOG,SWITCH_LOG_ERROR,"channel event:%s,%s\n",bound,context_extension);	
-			my_event_handler(event);
+
 			if(uuid != NULL){
 				switch_mutex_lock(globals.call_dispat_mutex);
 				switch_core_hash_insert(globals.call_dispat_hash,uuid,&flag_1);
@@ -320,7 +323,8 @@ static void channel_event_handler(switch_event_t *event){
 		if((flag != NULL) || (bound && context_extension &&
 		 !strcmp(bound,"inbound") &&
 		 !strcmp(context_extension,"dispatcher")) ){
-		    my_event_handler(event);
+		    //my_event_handler(event);
+			
 		    if(event_type == SWITCH_EVENT_CHANNEL_ANSWER && flag == NULL){
 		      switch_mutex_lock(globals.call_dispat_mutex);
 	          switch_core_hash_insert(globals.call_dispat_hash,uuid,&flag_1);
@@ -333,6 +337,7 @@ static void channel_event_handler(switch_event_t *event){
         }
 
 	}
+	my_event_handler(event);			
 
 }
 
@@ -602,7 +607,7 @@ switch_event_add_header(event, SWITCH_STACK_BOTTOM, "Member-Flag", "%s", flag);
 	
 */
 	switch_status_t status = SWITCH_STATUS_SUCCESS;
-	char  reply[256] = "";
+	char  reply[512] = "";
 	switch_size_t reply_len = sizeof(reply);
 	int called =0;
 	
@@ -615,6 +620,7 @@ switch_event_add_header(event, SWITCH_STACK_BOTTOM, "Member-Flag", "%s", flag);
 	char * call_name = switch_event_get_header(*event,"Conference-Name");
 	char * flag = switch_event_get_header(*event,"Member-Flag");
 	char *gateway_name = switch_event_get_header(*event,"Gateway-Name");
+	char *uuid = switch_event_get_header(*event,"Unique-ID");
 
 	if(switch_strlen_zero(user_name) || switch_strlen_zero(member_id)){
 		return status;
@@ -625,6 +631,7 @@ switch_event_add_header(event, SWITCH_STACK_BOTTOM, "Member-Flag", "%s", flag);
 
 			switch_snprintf(reply, sizeof(reply), "content-type:trap/call\n"
 								   "id:%s\n"
+							       "uuid:%s\n"
 								   "action:add\n"
 								   "call-name:%s\n"
 								   "member:%s\n"
@@ -634,6 +641,7 @@ switch_event_add_header(event, SWITCH_STACK_BOTTOM, "Member-Flag", "%s", flag);
 								   "flag:%s\n"
 								   "\n",
 								   id,
+							(!switch_strlen_zero(uuid))?uuid:"null",
 								   call_name,
 								   member_id,
 							(!switch_strlen_zero(gateway_name))?"gateway":"user",
@@ -649,6 +657,7 @@ switch_event_add_header(event, SWITCH_STACK_BOTTOM, "Member-Flag", "%s", flag);
 		else if(!strcasecmp(action,"del-member")){
 			switch_snprintf(reply, sizeof(reply), "content-type:trap/call\n"
 								   "id:%s\n"
+							       "uuid:%s\n"
 								   "action:del\n"
 								   "call-name:%s\n"
 								   "member:%s\n"
@@ -658,6 +667,7 @@ switch_event_add_header(event, SWITCH_STACK_BOTTOM, "Member-Flag", "%s", flag);
 							       "flag:%s\n"
 								   "\n",
 								   id,
+							(!switch_strlen_zero(uuid))?uuid:"null",
 								   call_name,
 							member_id,
 							(!switch_strlen_zero(gateway_name))?"gateway":"user",
@@ -672,6 +682,7 @@ switch_event_add_header(event, SWITCH_STACK_BOTTOM, "Member-Flag", "%s", flag);
 	if(called == 0){
 		switch_snprintf(reply, sizeof(reply), "content-type:trap/call\n"
 								   "id:%s\n"
+						           "uuid:%s\n"
 								   "action:flag\n"
 								   "call-name:%s\n"
 								   "member:%s\n"
@@ -681,6 +692,7 @@ switch_event_add_header(event, SWITCH_STACK_BOTTOM, "Member-Flag", "%s", flag);
 								   "flag:%s\n"
 								   "\n",
 								   id,
+						(!switch_strlen_zero(uuid))?uuid:"null",
 								   call_name,
 								   member_id,
 						(!switch_strlen_zero(gateway_name))?"gateway":"user",
@@ -978,6 +990,8 @@ static switch_status_t  call_dispatcher_fail_event_handler(listener_t *listener,
 
 	return  status;
 }
+#define EVENT_HEADER_DESTINATION_NUMBER "variable_destination_number"
+#define EVENT_HEADER_GATEWAY_NAME "variable_sip_gateway_name"
 static switch_status_t  channel_progress_event_handler(listener_t *listener, switch_event_t **event)
 {
 	switch_status_t status = SWITCH_STATUS_SUCCESS;
@@ -985,12 +999,47 @@ static switch_status_t  channel_progress_event_handler(listener_t *listener, swi
 	switch_size_t reply_len = sizeof(reply);
 	char * caller_id_number = switch_event_get_header(*event, "Caller-Caller-ID-Number");
 	char * caller_id_name = switch_event_get_header(*event, "Caller-Caller-ID-Name");
-
+	const char *bound = switch_event_get_header(*event,"Call-Direction");
+    const char *context_extension = switch_event_get_header(*event,"variable_context_extension");
+	char *gateway_name = switch_event_get_header(*event,EVENT_HEADER_GATEWAY_NAME);
+	//char *user_name = switch_event_get_header(*event,NODE_NAME_EVENT_HEADER);
+	//char * id = dup_user_id_from_channel_name(user_name);
 	char * uuid = switch_event_get_header(*event,"Unique-ID");
+
+	char * destination_number = switch_event_get_header(*event,EVENT_HEADER_DESTINATION_NUMBER);
 	//switch_log_printf(SWITCH_CHANNEL_LOG,SWITCH_LOG_ERROR,"channel progress event:%s,%s\n",caller_id_number,uuid);
-	if(caller_id_number &&  uuid){
-		
-   		if(!switch_strlen_zero(caller_id_number)){
+
+	if(!bound){
+		return status;
+	}
+	if(!strcmp(bound,"inbound")){
+		if(caller_id_number && !switch_strlen_zero(caller_id_number)){
+ 
+		switch_snprintf(reply, sizeof(reply), "content-type:trap/call\n"
+						   "id:%s\n"
+						   "uuid:%s\n"
+						   "action:ring\n"
+						   "call-name:%s\n"
+						   "member:0\n"
+						   "type:%s\n"
+						       "gateway-name:%s\n"
+						   "bound:in\n"
+						"destination:%s\n"
+						   "flag:media\n"
+						"\n",
+						caller_id_number,//id,
+						(!switch_strlen_zero(uuid))?uuid:"null",
+						(!switch_strlen_zero(uuid))?uuid:"null",
+						(!switch_strlen_zero(gateway_name))?"gateway":"user",
+						//(((strstr(user_name,"gateway"))==NULL?"user":"gateway")),
+						(!switch_strlen_zero(gateway_name))?gateway_name:"null",
+						(!switch_strlen_zero(destination_number))?destination_number:"null");
+		reply_len = strlen(reply);
+		switch_socket_send(listener->sock,reply, &reply_len);
+
+		//for dispat
+		if(context_extension &&  !strcmp(context_extension,"dispatcher")  && 
+		   caller_id_number &&  uuid && !switch_strlen_zero(caller_id_number)){
 			switch_snprintf(reply, sizeof(reply), "content-type:trap/call-dispatcher-progress\n"
 								   "caller_id_number:%s\n"
 							"caller_id_name:%s\n"
@@ -998,8 +1047,39 @@ static switch_status_t  channel_progress_event_handler(listener_t *listener, swi
 			reply_len = strlen(reply);
 			switch_socket_send(listener->sock,reply, &reply_len);
 			
+		
+		
+		}
 		}
 		
+	}	
+	else{
+			char *user_name = switch_event_get_header(*event,NODE_NAME_EVENT_HEADER);
+			char * id = dup_user_id_from_channel_name(user_name);
+
+		if(id && !switch_strlen_zero(id)){
+		switch_snprintf(reply, sizeof(reply), "content-type:trap/call\n"
+						   "id:%s\n"
+						   "uuid:%s\n"
+						   "action:ring\n"
+						   "call-name:%s\n"
+						   "member:0\n"
+						   "type:%s\n"
+						       "gateway-name:%s\n"
+						   "bound:out\n"
+						"caller_id:%s\n"
+						   "flag:media\n"
+						"\n",
+						id,
+						(!switch_strlen_zero(uuid))?uuid:"null",
+						(!switch_strlen_zero(uuid))?uuid:"null",
+						(!switch_strlen_zero(gateway_name))?"gateway":"user",
+						//(((strstr(user_name,"gateway"))==NULL?"user":"gateway")),
+						(!switch_strlen_zero(gateway_name))?gateway_name:"null",
+						(!switch_strlen_zero(caller_id_number))?caller_id_number:"null");
+		reply_len = strlen(reply);
+		switch_socket_send(listener->sock,reply, &reply_len);
+		}
 	}
 	return  status;
 }
@@ -1010,10 +1090,66 @@ static switch_status_t  channel_answer_event_handler(listener_t *listener, switc
 	switch_size_t reply_len = sizeof(reply);
 	char * caller_id_number = switch_event_get_header(*event, "Caller-Caller-ID-Number");
 	char * caller_id_name = switch_event_get_header(*event, "Caller-Caller-ID-Name");
+	const char *bound = switch_event_get_header(*event,"Call-Direction");
+    const char *context_extension = switch_event_get_header(*event,"variable_context_extension");
+	char *gateway_name = switch_event_get_header(*event,EVENT_HEADER_GATEWAY_NAME);
 
 	char * uuid = switch_event_get_header(*event,"Unique-ID");
+	char * destination_number = switch_event_get_header(*event,EVENT_HEADER_DESTINATION_NUMBER);
 	//switch_log_printf(SWITCH_CHANNEL_LOG,SWITCH_LOG_ERROR,"channel answer event:%s,%s\n",caller_id_number,uuid);
-	if(caller_id_number &&  uuid){
+	if(!bound){
+		char *user_name = switch_event_get_header(*event,NODE_NAME_EVENT_HEADER);
+		char * id = dup_user_id_from_channel_name(user_name);
+		if(id && !switch_strlen_zero(id)){
+		switch_snprintf(reply, sizeof(reply), "content-type:trap/call\n"
+						   "id:%s\n"
+						   "uuid:%s\n"
+						   "action:answer\n"
+						   "call-name:%s\n"
+						   "member:0\n"
+						   "type:%s\n"
+						       "gateway-name:%s\n"
+						"\n",
+						id,
+						(!switch_strlen_zero(uuid))?uuid:"null",
+						(!switch_strlen_zero(uuid))?uuid:"null",
+						(!switch_strlen_zero(gateway_name))?"gateway":"user",
+						//(((strstr(user_name,"gateway"))==NULL?"user":"gateway")),
+						(!switch_strlen_zero(gateway_name))?gateway_name:"null");
+		//(!switch_strlen_zero(caller_id_number))?caller_id_number:"null");
+		reply_len = strlen(reply);
+		switch_socket_send(listener->sock,reply, &reply_len);
+
+		}
+		return status;
+	}
+
+	if(!strcmp(bound,"inbound")){
+		if(caller_id_number){
+		switch_snprintf(reply, sizeof(reply), "content-type:trap/call\n"
+						   "id:%s\n"
+						   "uuid:%s\n"
+						   "action:answer\n"
+						   "call-name:%s\n"
+						   "member:0\n"
+						   "type:%s\n"
+						       "gateway-name:%s\n"
+						"bound:in\n"
+						"destination:%s\n"
+						"\n",
+						caller_id_number,//id,
+						(!switch_strlen_zero(uuid))?uuid:"null",
+						(!switch_strlen_zero(uuid))?uuid:"null",
+						(!switch_strlen_zero(gateway_name))?"gateway":"user",
+						//(((strstr(user_name,"gateway"))==NULL?"user":"gateway")),
+						(!switch_strlen_zero(gateway_name))?gateway_name:"null",
+						(!switch_strlen_zero(destination_number))?destination_number:"null");
+		reply_len = strlen(reply);
+		switch_socket_send(listener->sock,reply, &reply_len);
+		}
+	if(caller_id_number &&  uuid && bound && context_extension &&
+	   !strcmp(bound,"inbound") &&
+	   !strcmp(context_extension,"dispatcher")){
 		
    		if(!switch_strlen_zero(caller_id_number)){
 			switch_snprintf(reply, sizeof(reply), "content-type:trap/call-dispatcher-answer\n"
@@ -1026,6 +1162,36 @@ static switch_status_t  channel_answer_event_handler(listener_t *listener, switc
 		}
 		
 	}
+
+	}
+	else{
+		char *user_name = switch_event_get_header(*event,NODE_NAME_EVENT_HEADER);
+		char * id = dup_user_id_from_channel_name(user_name);
+		if(id && !switch_strlen_zero(id)){
+		switch_snprintf(reply, sizeof(reply), "content-type:trap/call\n"
+						   "id:%s\n"
+						   "uuid:%s\n"
+						   "action:answer\n"
+						   "call-name:%s\n"
+						   "member:0\n"
+						   "type:%s\n"
+						       "gateway-name:%s\n"
+						"bound:out\n"
+						"caller_id:%s\n"
+						"\n",
+						id,
+						(!switch_strlen_zero(uuid))?uuid:"null",
+						(!switch_strlen_zero(uuid))?uuid:"null",
+						(!switch_strlen_zero(gateway_name))?"gateway":"user",
+						//(((strstr(user_name,"gateway"))==NULL?"user":"gateway")),
+						(!switch_strlen_zero(gateway_name))?gateway_name:"null",
+						(!switch_strlen_zero(caller_id_number))?caller_id_number:"null");
+		reply_len = strlen(reply);
+		switch_socket_send(listener->sock,reply, &reply_len);
+
+		}
+
+	}
 	return  status;
 }
 
@@ -1036,10 +1202,61 @@ static switch_status_t  channel_hangup_event_handler(listener_t *listener, switc
 	switch_size_t reply_len = sizeof(reply);
 	char * caller_id_number = switch_event_get_header(*event, "Caller-Caller-ID-Number");
 	char * caller_id_name = switch_event_get_header(*event, "Caller-Caller-ID-Name");
+	const char *bound = switch_event_get_header(*event,"Call-Direction");
+    const char *context_extension = switch_event_get_header(*event,"variable_context_extension");
+	char *gateway_name = switch_event_get_header(*event,EVENT_HEADER_GATEWAY_NAME);
+
 
 	char * uuid = switch_event_get_header(*event,"Unique-ID");
 	//switch_log_printf(SWITCH_CHANNEL_LOG,SWITCH_LOG_ERROR,"channel hangup event:%s,%s\n",caller_id_number,uuid);
-	if(caller_id_number &&  uuid){
+	if(!bound){
+		char *user_name = switch_event_get_header(*event,NODE_NAME_EVENT_HEADER);
+		char * id = dup_user_id_from_channel_name(user_name);
+		if(id && !switch_strlen_zero(id)){
+		switch_snprintf(reply, sizeof(reply), "content-type:trap/call\n"
+						   "id:%s\n"
+						   "uuid:%s\n"
+						   "action:hangup\n"
+						   "call-name:%s\n"
+						   "member:0\n"
+						   "type:%s\n"
+						       "gateway-name:%s\n"
+						"\n",
+						id,
+						(!switch_strlen_zero(uuid))?uuid:"null",
+						(!switch_strlen_zero(uuid))?uuid:"null",
+						(!switch_strlen_zero(gateway_name))?"gateway":"user",
+						//(((strstr(user_name,"gateway"))==NULL?"user":"gateway")),
+						(!switch_strlen_zero(gateway_name))?gateway_name:"null");
+		reply_len = strlen(reply);
+		switch_socket_send(listener->sock,reply, &reply_len);
+
+		}
+		return status;
+	}
+
+	if(!strcmp(bound,"inbound")){
+		switch_snprintf(reply, sizeof(reply), "content-type:trap/call\n"
+						   "id:%s\n"
+						   "uuid:%s\n"
+						   "action:hangup\n"
+						   "call-name:%s\n"
+						   "member:0\n"
+						   "type:%s\n"
+						       "gateway-name:%s\n"
+						"\n",
+						caller_id_number,//id,
+						(!switch_strlen_zero(uuid))?uuid:"null",
+						(!switch_strlen_zero(uuid))?uuid:"null",
+						(!switch_strlen_zero(gateway_name))?"gateway":"user",
+						//(((strstr(user_name,"gateway"))==NULL?"user":"gateway")),
+						(!switch_strlen_zero(gateway_name))?gateway_name:"null");
+		reply_len = strlen(reply);
+		switch_socket_send(listener->sock,reply, &reply_len);
+
+	if(caller_id_number &&  uuid && bound && context_extension &&
+	   !strcmp(bound,"inbound") &&
+	   !strcmp(context_extension,"dispatcher")){
 		
    		if(!switch_strlen_zero(caller_id_number)){
 			switch_snprintf(reply, sizeof(reply), "content-type:trap/call-dispatcher-hangup\n"
@@ -1051,6 +1268,33 @@ static switch_status_t  channel_hangup_event_handler(listener_t *listener, switc
 			
 		}
 		
+	}
+
+	}
+	else{
+		char *user_name = switch_event_get_header(*event,NODE_NAME_EVENT_HEADER);
+		char * id = dup_user_id_from_channel_name(user_name);
+		if(id && !switch_strlen_zero(id)){
+		switch_snprintf(reply, sizeof(reply), "content-type:trap/call\n"
+						   "id:%s\n"
+						   "uuid:%s\n"
+						   "action:hangup\n"
+						   "call-name:%s\n"
+						   "member:0\n"
+						   "type:%s\n"
+						       "gateway-name:%s\n"
+						"\n",
+						id,
+						(!switch_strlen_zero(uuid))?uuid:"null",
+						(!switch_strlen_zero(uuid))?uuid:"null",
+						(!switch_strlen_zero(gateway_name))?"gateway":"user",
+						//(((strstr(user_name,"gateway"))==NULL?"user":"gateway")),
+						(!switch_strlen_zero(gateway_name))?gateway_name:"null");
+		reply_len = strlen(reply);
+		switch_socket_send(listener->sock,reply, &reply_len);
+
+		}
+
 	}
 	return  status;
 }
