@@ -1,0 +1,5 @@
+gcc -shared  .libs/mod_expr_la-mod_expr.o .libs/mod_expr_la-expreval.o .libs/mod_expr_la-exprinit.o .libs/mod_expr_la-exprobj.o .libs/mod_expr_la-exprutil.o .libs/mod_expr_la-exprfunc.o .libs/mod_expr_la-exprmem.o .libs/mod_expr_la-exprpars.o .libs/mod_expr_la-exprval.o  -Wl,--rpath -Wl,/home/pub/src/freeswitch-1.0.6/.libs -Wl,--rpath -Wl,/home/pub/release/fs106/lib -lm /home/pub/src/freeswitch-1.0.6/.libs/libfreeswitch.so -L/home/pub/src/freeswitch-1.0.6/libs/apr-util/xml/expat/lib -L/home/pub/src/freeswitch-1.0.6/libs/apr-util/xml/expat/lib/.libs -L/home/pub/src/freeswitch-1.0.6/libs/apr/.libs -L/home/pub/src/freeswitch-1.0.6/libs/srtp -L/usr/kerberos/lib64 -lssl -lcrypto -ldl -lz -lncurses  -Wl,-soname -Wl,mod_expr.so -o .libs/mod_expr.so
+ar cru .libs/mod_expr.a  mod_expr_la-mod_expr.o mod_expr_la-expreval.o mod_expr_la-exprinit.o mod_expr_la-exprobj.o mod_expr_la-exprutil.o mod_expr_la-exprfunc.o mod_expr_la-exprmem.o mod_expr_la-exprpars.o mod_expr_la-exprval.o
+ranlib .libs/mod_expr.a
+creating mod_expr.la
+(cd .libs && rm -f mod_expr.la && ln -s ../mod_expr.la mod_expr.la)

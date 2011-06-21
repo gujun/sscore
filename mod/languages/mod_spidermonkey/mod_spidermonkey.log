@@ -1,0 +1,13 @@
+
+*** Warning: Linking the shared library mod_spidermonkey_odbc.la against the
+*** static library /home/pub/src/freeswitch-1.0.6/libs/js/nsprpub/pr/src/libnspr4.a is not portable!
+gcc -shared  .libs/mod_spidermonkey_odbc_la-mod_spidermonkey_odbc.o  -Wl,--rpath -Wl,/home/pub/src/freeswitch-1.0.6/.libs -Wl,--rpath -Wl,/home/pub/src/freeswitch-1.0.6/libs/js/.libs -Wl,--rpath -Wl,/home/pub/release/fs106/lib -L/home/pub/src/freeswitch-1.0.6/libs/js/nsprpub/dist/lib -lm -lnspr4 /home/pub/src/freeswitch-1.0.6/libs/js/nsprpub/pr/src/libnspr4.a /home/pub/src/freeswitch-1.0.6/.libs/libfreeswitch.so -L/home/pub/src/freeswitch-1.0.6/libs/apr-util/xml/expat/lib -L/home/pub/src/freeswitch-1.0.6/libs/apr-util/xml/expat/lib/.libs -L/home/pub/src/freeswitch-1.0.6/libs/apr/.libs -L/home/pub/src/freeswitch-1.0.6/libs/srtp -L/usr/kerberos/lib64 /home/pub/src/freeswitch-1.0.6/libs/js/.libs/libjs.so -lssl -lcrypto -ldl -lz -lncurses  -Wl,-soname -Wl,mod_spidermonkey_odbc.so -o .libs/mod_spidermonkey_odbc.so
+copying selected object files to avoid basename conflicts...
+rm -fr .libs/mod_spidermonkey_odbc.lax
+mkdir .libs/mod_spidermonkey_odbc.lax
+ln /home/pub/src/freeswitch-1.0.6/libs/js/nsprpub/pr/src/libnspr4.a .libs/mod_spidermonkey_odbc.lax/lt1-libnspr4.a || cp /home/pub/src/freeswitch-1.0.6/libs/js/nsprpub/pr/src/libnspr4.a .libs/mod_spidermonkey_odbc.lax/lt1-libnspr4.a
+ar cru .libs/mod_spidermonkey_odbc.a /home/pub/src/freeswitch-1.0.6/libs/js/nsprpub/pr/src/libnspr4.a .libs/mod_spidermonkey_odbc.lax/lt1-libnspr4.a mod_spidermonkey_odbc_la-mod_spidermonkey_odbc.o /home/pub/src/freeswitch-1.0.6/libs/js/nsprpub/pr/src/libnspr4.a /home/pub/src/freeswitch-1.0.6/libs/js/nsprpub/pr/src/libnspr4.a
+ranlib .libs/mod_spidermonkey_odbc.a
+rm -fr .libs/mod_spidermonkey_odbc.lax
+creating mod_spidermonkey_odbc.la
+(cd .libs && rm -f mod_spidermonkey_odbc.la && ln -s ../mod_spidermonkey_odbc.la mod_spidermonkey_odbc.la)

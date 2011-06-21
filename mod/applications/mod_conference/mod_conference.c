@@ -4830,6 +4830,17 @@ static switch_status_t conf_api_sub_floor(conference_obj_t *conference, switch_s
 		return SWITCH_STATUS_GENERR;
 	}
 }
+static switch_status_t conf_api_sub_endconf(conference_obj_t *conference, switch_stream_handle_t *stream, int argc, char **argv)
+{
+	switch_assert(conference != NULL);
+	//switch_assert(stream != NULL);
+	
+	switch_mutex_lock(conference->mutex);
+	switch_set_flag_locked(conference, CFLAG_DESTRUCT);
+	conference->cancel_cause = SWITCH_CAUSE_NORMAL_CLEARING;
+	switch_mutex_unlock(conference->mutex);
+	return SWITCH_STATUS_SUCCESS;
+}
 #endif
 typedef enum {
 	CONF_API_COMMAND_LIST = 0,
@@ -4899,6 +4910,7 @@ static api_command_t conf_api_sub_commands[] = {
 	{"nomin",(void_fn_t) & conf_api_sub_min,CONF_API_SUB_ARGS_SPLIT,"<confname> nomin"},
 	{"floor",(void_fn_t) & conf_api_sub_floor,CONF_API_SUB_ARGS_SPLIT,"<confname> floor <newval>"},
 	{"nofloor",(void_fn_t) & conf_api_sub_floor, CONF_API_SUB_ARGS_SPLIT, "<confname> nofloor"},
+	{"endconf",(void_fn_t) & conf_api_sub_endconf, CONF_API_SUB_ARGS_SPLIT, "<confname> endconf"},
 #endif
 #if GUJUN_CHANGE_BACK_CONFERENCE
 	{"back",(void_fn_t) & conf_api_sub_back,CONF_API_SUB_ARGS_SPLIT,"<confname> back <newval>"},
